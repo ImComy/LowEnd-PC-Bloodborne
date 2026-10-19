@@ -2,8 +2,10 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -100,7 +102,8 @@ struct CutCache {
     static constexpr int lod_count=18;
     bool ready=false;
     FloorIndex floors;
-    struct Lod {bool built=false;std::vector<Line> strokes;};
+    // next_wall/next_piece: where a Step that ran out of time resumes.
+    struct Lod {bool built=false;std::vector<Line> strokes;size_t next_wall=0;int next_piece=0;};
     std::vector<std::array<Lod,lod_count>> layers;
     void Build(std::vector<Triangle> floor_geometry,size_t layer_count){floors.Build(std::move(floor_geometry));layers.resize(layer_count);ready=true;}
     // The diagonal's perpendicular pitch is spacing / sqrt(2). A 1.5x
@@ -108,13 +111,33 @@ struct CutCache {
     static float Spacing(int level){return .125f*std::pow(1.5f,float(std::clamp(level,0,lod_count-1)));}
     static int Level(float zoom,float scale){return std::clamp(int(std::lround(std::log(5.5f*1.41421356237f*scale/std::max(.0001f,zoom*.125f))/std::log(1.5f))),0,lod_count-1);}
     const std::vector<Line>& Get(size_t layer,int level,const std::vector<Line>& walls){
-        auto& lod=layers[layer][std::clamp(level,0,lod_count-1)];if(lod.built)return lod.strokes;lod.built=true;
+        auto& lod=layers[layer][std::clamp(level,0,lod_count-1)];if(!lod.built)Step(layer,level,walls,std::numeric_limits<double>::infinity());
+        return lod.strokes;
+    }
+    bool Built(size_t layer,int level)const{return layers[layer][std::clamp(level,0,lod_count-1)].built;}
+    // The finished level closest to `level`, or -1 while none is.
+    int NearestBuilt(size_t layer,int level)const{
+        level=std::clamp(level,0,lod_count-1);
+        for(int d=0;d<lod_count;++d){if(level-d>=0&&Built(layer,level-d))return level-d;if(level+d<lod_count&&Built(layer,level+d))return level+d;}
+        return -1;
+    }
+    // Builds the level for about budget_ms, at least one wall piece per call, resuming where
+    // the last call stopped (the strokes come out exactly as one uninterrupted Get makes them).
+    // Pass the same walls each time. True once the level is complete.
+    bool Step(size_t layer,int level,const std::vector<Line>& walls,double budget_ms){
+        auto& lod=layers[layer][std::clamp(level,0,lod_count-1)];if(lod.built)return true;
         const float spacing=Spacing(level);
+        const bool timed=budget_ms<std::numeric_limits<double>::infinity();
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::duration<double,std::milli>(timed?budget_ms:0);
+        bool first=true;
         // Supported wall bands only: subdivide to bound the distance from the
         // support probe, never extrapolate a band beyond either wall endpoint.
-        for(size_t wi=0;wi<walls.size();++wi){const auto w=walls[wi];auto d=Sub(w.b,w.a);const float length=std::hypot(d.x,d.z);if(length<.03f||length>10000)continue;
+        for(;lod.next_wall<walls.size();++lod.next_wall,lod.next_piece=0){const size_t wi=lod.next_wall;const auto w=walls[wi];auto d=Sub(w.b,w.a);const float length=std::hypot(d.x,d.z);if(length<.03f||length>10000)continue;
             const Point normal{-d.z/length,d.x/length};const int pieces=std::max(1,int(std::ceil(length/1.25f)));
-            for(int piece=0;piece<pieces;++piece){const auto a=Mix(w.a,w.b,float(piece)/pieces),b=Mix(w.a,w.b,float(piece+1)/pieces),mid=Mix(a,b,.5f);
+            for(;lod.next_piece<pieces;){
+                if(!first&&timed&&std::chrono::steady_clock::now()>=deadline)return false;
+                first=false;const int piece=lod.next_piece++;
+                const auto a=Mix(w.a,w.b,float(piece)/pieces),b=Mix(w.a,w.b,float(piece+1)/pieces),mid=Mix(a,b,.5f);
                 // With lines alone we cannot infer a building's solid interior.
                 // A narrow .65m band near a proven floor boundary is all we draw.
                 bool supported=false;for(float side:{-.35f,.35f})if(floors.Contains({mid.x+normal.x*side,mid.z+normal.z*side}))supported=true;
@@ -131,7 +154,7 @@ struct CutCache {
                 }
             }
         }
-        return lod.strokes;
+        lod.built=true;return true;
     }
 };
 } // namespace BbAtlasStyle

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "bbport_atlas_style.h"
+#include <chrono>
+#include <limits>
 #include <numeric>
 
 // Enclosed gaps in the verified floor union, not inferred building solids.
@@ -57,7 +59,7 @@ struct Cache {
     bool ready=false;
     size_t holes=0,rejected=0,budget_skips=0;
     std::vector<std::vector<Triangle>> layers;
-    struct Hatch {bool ready=false;std::vector<Line> lines;};
+    struct Hatch {bool ready=false;std::vector<Line> lines;size_t next=0;};
     std::vector<std::array<Hatch,BbAtlasStyle::CutCache::lod_count>> hatches;
     static constexpr size_t max_fragments=4096,max_layer_triangles=60000;
     void Build(const std::vector<std::vector<Ring>>& outlines,std::vector<BbAtlasStyle::FloorIndex>& layer_floors){
@@ -88,11 +90,28 @@ struct Cache {
         }ready=true;
     }
     const std::vector<Line>& Get(size_t layer,int level){
-        auto& cached=hatches[layer][std::clamp(level,0,BbAtlasStyle::CutCache::lod_count-1)];if(cached.ready)return cached.lines;cached.ready=true;
+        auto& cached=hatches[layer][std::clamp(level,0,BbAtlasStyle::CutCache::lod_count-1)];if(!cached.ready)Step(layer,level,std::numeric_limits<double>::infinity());
+        return cached.lines;
+    }
+    bool Ready(size_t layer,int level)const{return hatches[layer][std::clamp(level,0,BbAtlasStyle::CutCache::lod_count-1)].ready;}
+    // The finished level closest to `level`, or -1 while none is.
+    int NearestReady(size_t layer,int level)const{
+        constexpr int count=BbAtlasStyle::CutCache::lod_count;level=std::clamp(level,0,count-1);
+        for(int d=0;d<count;++d){if(level-d>=0&&Ready(layer,level-d))return level-d;if(level+d<count&&Ready(layer,level+d))return level+d;}
+        return -1;
+    }
+    // Builds the level for about budget_ms, at least one triangle per call, resuming where the
+    // last call stopped (the same lines as one uninterrupted Get). True once the level is complete.
+    bool Step(size_t layer,int level,double budget_ms){
+        auto& cached=hatches[layer][std::clamp(level,0,BbAtlasStyle::CutCache::lod_count-1)];if(cached.ready)return true;
         const float spacing=BbAtlasStyle::CutCache::Spacing(level)*1.5f;
-        for(size_t i=0;i<layers[layer].size();++i){const auto& t=layers[layer][i];float low=t.p[0].x-t.p[0].z,high=low;for(auto p:t.p){low=std::min(low,p.x-p.z);high=std::max(high,p.x-p.z);}const auto b=Box(Ring(t.p.begin(),t.p.end()));
-            for(int n=int(std::ceil(low/spacing));n<=int(std::floor(high/spacing));++n){const float phase=n*spacing;Point a{b.x0-1,b.x0-1-phase},end{b.x1+1,b.x1+1-phase};float lo,hi;if(BbAtlasStyle::Clip(t.p,a,end,lo,hi))cached.lines.push_back({BbAtlasStyle::Mix(a,end,lo),BbAtlasStyle::Mix(a,end,hi),BbAtlasStyle::Hash(uint32_t(n))});if(cached.lines.size()>150000){cached.lines.clear();return cached.lines;}}
-        }return cached.lines;
+        const bool timed=budget_ms<std::numeric_limits<double>::infinity();
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::duration<double,std::milli>(timed?budget_ms:0);
+        for(bool first=true;cached.next<layers[layer].size();++cached.next,first=false){
+            if(!first&&timed&&std::chrono::steady_clock::now()>=deadline)return false;
+            const auto& t=layers[layer][cached.next];float low=t.p[0].x-t.p[0].z,high=low;for(auto p:t.p){low=std::min(low,p.x-p.z);high=std::max(high,p.x-p.z);}const auto b=Box(Ring(t.p.begin(),t.p.end()));
+            for(int n=int(std::ceil(low/spacing));n<=int(std::floor(high/spacing));++n){const float phase=n*spacing;Point a{b.x0-1,b.x0-1-phase},end{b.x1+1,b.x1+1-phase};float lo,hi;if(BbAtlasStyle::Clip(t.p,a,end,lo,hi))cached.lines.push_back({BbAtlasStyle::Mix(a,end,lo),BbAtlasStyle::Mix(a,end,hi),BbAtlasStyle::Hash(uint32_t(n))});if(cached.lines.size()>150000){cached.lines.clear();cached.ready=true;return true;}}
+        }cached.ready=true;return true;
     }
 };
 } // namespace BbAtlasInteriors

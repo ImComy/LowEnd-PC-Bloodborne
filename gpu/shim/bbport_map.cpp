@@ -25,6 +25,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
@@ -54,10 +55,11 @@ BbMapControllerChord controller_chord;
 ImFont* title_font=nullptr;
 std::atomic<bool> open{false};
 int keyboard=0,chord=1,selected=-1,preview_area=-1;
-float cx=0,cz=0,zoom=3.0f,padx=0,pady=0;
+float cx=0,cz=0,zoom=3.0f;
+std::atomic<float> padx{0},pady{0};
 std::atomic<float> pointer_x{0},pointer_y{0};
 std::atomic<int> cycle_request{0};
-std::atomic<bool> confirm_request{false},back_request{false};
+std::atomic<bool> confirm_request{false},back_request{false},recenter_request{false},shading_request{false};
 std::atomic<bool> pad_armed{false};
 std::atomic<int> zoom_request{0},zoom_held{0};
 uint64_t zoom_repeat=0;
@@ -237,13 +239,15 @@ void Recenter() {
     preview_active=false;preview_area=-1;selected_destination=-1;cursor_u=cursor_v=.5f;
     const int current=CurrentArea();
     selected=current;follow=true;zoom=9.0f*MapUiScale();
-    if(selected>=0){cx=location.x;cz=location.z;Load(areas[selected]);}
+    // Draw loads the area. Opening from the quick menu runs this on the game's pad thread,
+    // where reading and parsing the area's file held the game up.
+    if(selected>=0){cx=location.x;cz=location.z;}
 }
 void SetOpen(bool value) {
     std::lock_guard<std::recursive_mutex> map_guard(map_mutex);
     open=enabled && value;padx=pady=0;
     pointer_x=pointer_y=0;cycle_request=0;confirm_request=false;back_request=false;
-    pad_armed=false;zoom_request=zoom_held=0;
+    pad_armed=false;zoom_request=zoom_held=0;recenter_request=shading_request=false;
     cursor_u=cursor_v=.5f;selected_destination=-1;travel_dialog=-1;
     if(open){runtime_map_location(&location);Recenter();preview_active=false;preview_area=-1;}
 }
@@ -263,6 +267,50 @@ int AutoLayer(const Area& a) {
         }
     }
     return local>=0?local:nearest;
+}
+// A finished hatch list never changes, so it gets a uniform grid once: a frame then visits the
+// lines under the canvas, not every line of the area (hundreds of thousands at close zoom).
+struct LineGrid {
+    const BbAtlasStyle::Line* source=nullptr;size_t count=0;
+    float x0=0,z0=0,cell=1;int nx=0,nz=0;
+    std::vector<uint32_t> offsets,items,broad,marks;uint32_t serial=0;
+    void Cells(const BbAtlasStyle::Line& l,int& a0,int& b0,int& a1,int& b1)const{
+        a0=std::clamp(int((std::min(l.a.x,l.b.x)-x0)/cell),0,nx-1);a1=std::clamp(int((std::max(l.a.x,l.b.x)-x0)/cell),0,nx-1);
+        b0=std::clamp(int((std::min(l.a.z,l.b.z)-z0)/cell),0,nz-1);b1=std::clamp(int((std::max(l.a.z,l.b.z)-z0)/cell),0,nz-1);
+    }
+    void Build(const std::vector<BbAtlasStyle::Line>& lines){
+        source=lines.data();count=lines.size();offsets.clear();items.clear();broad.clear();marks.assign(count,0);serial=0;nx=nz=0;
+        if(lines.empty())return;
+        float x1=-std::numeric_limits<float>::infinity(),z1=x1;x0=z0=std::numeric_limits<float>::infinity();
+        for(const auto& l:lines){x0=std::min({x0,l.a.x,l.b.x});z0=std::min({z0,l.a.z,l.b.z});x1=std::max({x1,l.a.x,l.b.x});z1=std::max({z1,l.a.z,l.b.z});}
+        cell=std::max(4.f,std::max(x1-x0,z1-z0)/128.f);
+        nx=std::min(256,int((x1-x0)/cell)+1);nz=std::min(256,int((z1-z0)/cell)+1);
+        offsets.assign(size_t(nx)*nz+1,0);
+        auto each=[&](auto&& fn){for(uint32_t i=0;i<count;++i){int a0,b0,a1,b1;Cells(lines[i],a0,b0,a1,b1);
+            // A long diagonal would fill a square of cells; such lines are always visited.
+            if((a1-a0+1)*(b1-b0+1)>64){fn(i,-1);continue;}
+            for(int z=b0;z<=b1;++z)for(int x=a0;x<=a1;++x)fn(i,z*nx+x);}};
+        each([&](uint32_t i,int c){if(c<0)broad.push_back(i);else ++offsets[c+1];});
+        for(size_t c=1;c<offsets.size();++c)offsets[c]+=offsets[c-1];
+        items.resize(offsets.back());auto fill=offsets;
+        each([&](uint32_t i,int c){if(c>=0)items[fill[c]++]=i;});
+    }
+    template<class F> void Visit(const std::vector<BbAtlasStyle::Line>& lines,float qx0,float qz0,float qx1,float qz1,F&& fn){
+        if(!count)return;
+        if(++serial==0){std::fill(marks.begin(),marks.end(),0);serial=1;}
+        for(auto i:broad)fn(lines[i]);
+        if(qx1<x0||qz1<z0||qx0>x0+nx*cell||qz0>z0+nz*cell)return;
+        const int a0=std::clamp(int((qx0-x0)/cell),0,nx-1),a1=std::clamp(int((qx1-x0)/cell),0,nx-1);
+        const int b0=std::clamp(int((qz0-z0)/cell),0,nz-1),b1=std::clamp(int((qz1-z0)/cell),0,nz-1);
+        for(int z=b0;z<=b1;++z)for(int x=a0;x<=a1;++x){const int c=z*nx+x;
+            for(uint32_t k=offsets[c];k<offsets[c+1];++k){const auto i=items[k];if(marks[i]!=serial){marks[i]=serial;fn(lines[i]);}}}
+    }
+};
+std::unordered_map<const std::vector<BbAtlasStyle::Line>*,LineGrid> line_grids;
+template<class F> void LinesInView(const std::vector<BbAtlasStyle::Line>& lines,float x0,float z0,float x1,float z1,F&& fn){
+    auto& grid=line_grids[&lines];
+    if(grid.source!=lines.data()||grid.count!=lines.size())grid.Build(lines);
+    grid.Visit(lines,x0,z0,x1,z1,fn);
 }
 int PrimaryLayer(const Area& a) {
     if(a.layers.empty())return -1;
@@ -321,12 +369,13 @@ bool Enabled(){return enabled;}
 int ShortcutMode(){return chord;}
 bool UsesControllerGlyphs(){return BbAtlasMenu::UsesControllerGlyphs();}
 void OpenFromMenu(){SetOpen(true);}
+// The game's pad thread. Requests only, no map_mutex: Draw holds it for a whole frame of
+// drawing, and waiting for it here held up the game.
 void MappedPad(unsigned rising,unsigned char lx,unsigned char ly,unsigned char rx,unsigned char ry,unsigned held) {
-    std::lock_guard<std::recursive_mutex> map_guard(map_mutex);
     if(!open)return;
     if(!pad_armed){if(!held&&std::abs(int(lx)-128)<24&&std::abs(int(ly)-128)<24&&std::abs(int(rx)-128)<24&&std::abs(int(ry)-128)<24)pad_armed=true;else return;}
-    if(travel_dialog<0 && (rising&0x1000u))Recenter();
-    if(travel_dialog<0 && (rising&0x8000u))elevation_shading=!elevation_shading;
+    if(rising&0x1000u)recenter_request=true;
+    if(rising&0x8000u)shading_request=true;
     if((held&0xc00u)!=0xc00u && (rising&0xc00u)==0x400u)cycle_request=-1;
     if((held&0xc00u)!=0xc00u && (rising&0xc00u)==0x800u)cycle_request=1;
     if((rising&0x300u)==0x100u)zoom_request=-1;
@@ -487,6 +536,8 @@ void Draw() {
     const bool cancel_dialog=back_request.exchange(false);
     if(cancel_dialog && travel_dialog<0){Close();return;}
     const bool confirm=confirm_request.exchange(false),dialog_was_open=travel_dialog>=0;
+    if(recenter_request.exchange(false)&&!dialog_was_open)Recenter();
+    if(shading_request.exchange(false)&&!dialog_was_open)elevation_shading=!elevation_shading;
     int zoom_step=zoom_request.exchange(0);
     if(!dialog_was_open){if(zoom_step)zoom_repeat=SDL_GetTicks();else if(zoom_held&&SDL_GetTicks()-zoom_repeat>=180){zoom_step=zoom_held;zoom_repeat=SDL_GetTicks();}if(zoom_step)zoom=std::clamp(zoom*(zoom_step>0?1.25f:.8f),.15f*MapUiScale(),25.f*MapUiScale());}
     const int direction=cycle_request.exchange(0);
@@ -562,7 +613,16 @@ void Draw() {
     if(!dialog_was_open&&(padx||pady)){follow=false;cx+=padx*350*ImGui::GetIO().DeltaTime/zoom;cz-=pady*350*ImGui::GetIO().DeltaTime/zoom;}
     auto project=[&](float x,float z){return ImVec2(canvas_center.x+(x-cx)*zoom,canvas_center.y-(z-cz)*zoom);};
     float render_y=location.y;
-    auto visible=[&](float minx,float minz,float maxx,float maxz){if(selected>=0&&(!BbMapFeatures::Revealed(areas[selected].id,(minx+maxx)*.5f,render_y,(minz+maxz)*.5f)||!BbMapFeatures::Revealed(areas[selected].id,minx,render_y,minz)||!BbMapFeatures::Revealed(areas[selected].id,maxx,render_y,maxz)))return false;const auto p=project(minx,maxz),q=project(maxx,minz);return !(q.x<origin.x||p.x>origin.x+canvas_size.x||q.y<origin.y||p.y>origin.y+canvas_size.y);};
+    // On screen first: a projection is far cheaper than the fog's region tests.
+    auto on_screen=[&](float minx,float minz,float maxx,float maxz){const auto p=project(minx,maxz),q=project(maxx,minz);return !(q.x<origin.x||p.x>origin.x+canvas_size.x||q.y<origin.y||p.y>origin.y+canvas_size.y);};
+    auto revealed_box=[&](float minx,float minz,float maxx,float maxz){return selected<0||(BbMapFeatures::Revealed(areas[selected].id,(minx+maxx)*.5f,render_y,(minz+maxz)*.5f)&&BbMapFeatures::Revealed(areas[selected].id,minx,render_y,minz)&&BbMapFeatures::Revealed(areas[selected].id,maxx,render_y,maxz));};
+    auto visible=[&](float minx,float minz,float maxx,float maxz){return on_screen(minx,minz,maxx,maxz)&&revealed_box(minx,minz,maxx,maxz);};
+    // The world rectangle under the canvas, for the line grids.
+    const float view_x0=cx-canvas_size.x*.5f/zoom-1,view_x1=cx+canvas_size.x*.5f/zoom+1;
+    const float view_z0=cz-canvas_size.y*.5f/zoom-1,view_z1=cz+canvas_size.y*.5f/zoom+1;
+    // Hatch levels still building get at most this much of a frame; the rest waits for the next.
+    const auto build_deadline=std::chrono::steady_clock::now()+std::chrono::microseconds(3000);
+    auto build_budget=[&]{return std::max(0.0,std::chrono::duration<double,std::milli>(build_deadline-std::chrono::steady_clock::now()).count());};
     auto outline=[&](const std::vector<Point>& ring,ImU32 color,float width){for(size_t i=0;i<ring.size();++i){const auto a=ring[i],b=ring[(i+1)%ring.size()];if(visible(std::min(a.x,b.x),std::min(a.z,b.z),std::max(a.x,b.x),std::max(a.z,b.z)))draw->AddLine(project(a.x,a.z),project(b.x,b.z),color,width);}};
     if(!available){const char* message=location.valid?"Map data is not available for this location":"Your position is unavailable while loading or outside a supported area";const ImVec2 extent=font->CalcTextSizeA(20*scale,FLT_MAX,0,message);draw->AddText(font,20*scale,ImVec2(canvas_center.x-extent.x*.5f,canvas_center.y-10*scale),muted,message);}
     else {
@@ -599,10 +659,11 @@ void Draw() {
         }
         auto heightTint=[&](float y,int alpha){const float t=elevation_shading?std::clamp((y-height_min)/std::max(.01f,height_max-height_min),0.0f,1.0f):.72f;const int shade=int(118+120*t);return IM_COL32(shade+4,shade+2,shade,alpha);};
         auto floorTriangle=[&](const Layer& layer,const Triangle& t,int alpha){
+            const float minx=std::min({t.v[0],t.v[2],t.v[4]}),maxx=std::max({t.v[0],t.v[2],t.v[4]}),minz=std::min({t.v[1],t.v[3],t.v[5]}),maxz=std::max({t.v[1],t.v[3],t.v[5]});if(!on_screen(minx,minz,maxx,maxz))return;
             const float fy=layer.has_vertex_heights?(t.y[0]+t.y[1]+t.y[2])/3:layer.anchor;
             if(!BbMapFeatures::Revealed(a.id,(t.v[0]+t.v[2]+t.v[4])/3,fy,(t.v[1]+t.v[3]+t.v[5])/3))return;
             for(int k=0;k<3;++k)if(!BbMapFeatures::Revealed(a.id,t.v[2*k],layer.has_vertex_heights?t.y[k]:layer.anchor,t.v[2*k+1]))return;
-            const float minx=std::min({t.v[0],t.v[2],t.v[4]}),maxx=std::max({t.v[0],t.v[2],t.v[4]}),minz=std::min({t.v[1],t.v[3],t.v[5]}),maxz=std::max({t.v[1],t.v[3],t.v[5]});if(!visible(minx,minz,maxx,maxz))return;
+            if(!revealed_box(minx,minz,maxx,maxz))return;
             const ImVec2 screen_pts[3]={project(t.v[0],t.v[1]),project(t.v[2],t.v[3]),project(t.v[4],t.v[5])};
             const ImVec2 world_pts[3]={ImVec2(t.v[0],t.v[1]),ImVec2(t.v[2],t.v[3]),ImVec2(t.v[4],t.v[5])};
             const ImU32 colors[3]={heightTint(layer.has_vertex_heights?t.y[0]:layer.anchor,alpha),heightTint(layer.has_vertex_heights?t.y[1]:layer.anchor,alpha),heightTint(layer.has_vertex_heights?t.y[2]:layer.anchor,alpha)};
@@ -631,9 +692,14 @@ void Draw() {
                 draw->AddTriangleFilled(project(p[0].x,p[0].z),project(p[1].x,p[1].z),project(p[2].x,p[2].z),pass==1?IM_COL32(53,48,39,255):IM_COL32(44,41,34,255));
             }
         }
-        for(size_t li=0;li<a.interior_cache.layers.size();++li)for(const auto& line:a.interior_cache.Get(li,interior_lod)){
-            if(!visible(std::min(line.a.x,line.b.x),std::min(line.a.z,line.b.z),std::max(line.a.x,line.b.x),std::max(line.a.z,line.b.z)))continue;
-            scratch(project(line.a.x,line.a.z),project(line.b.x,line.b.z),IM_COL32(135,119,90,int(li)==active?28+line.wear%20:15+line.wear%13));
+        for(size_t li=0;li<a.interior_cache.layers.size();++li){
+            // A level still building shows the nearest finished one; nothing until one exists.
+            if(!a.interior_cache.Ready(li,interior_lod))a.interior_cache.Step(li,interior_lod,build_budget());
+            const int lod=a.interior_cache.NearestReady(li,interior_lod);if(lod<0)continue;
+            LinesInView(a.interior_cache.Get(li,lod),view_x0,view_z0,view_x1,view_z1,[&](const BbAtlasStyle::Line& line){
+                if(!visible(std::min(line.a.x,line.b.x),std::min(line.a.z,line.b.z),std::max(line.a.x,line.b.x),std::max(line.a.z,line.b.z)))return;
+                scratch(project(line.a.x,line.a.z),project(line.b.x,line.b.z),IM_COL32(135,119,90,int(li)==active?28+line.wear%20:15+line.wear%13));
+            });
         }
         // Keep the whole area's other storeys as subdued context. A narrow
         // height window hid the streets below bridges and made orientation
@@ -650,13 +716,20 @@ void Draw() {
         if(active>=0&&active<int(a.layers.size())){
             render_y=a.layers[active].anchor;
 
-            const int lod=BbAtlasStyle::CutCache::Level(zoom,scale);
-            std::vector<BbAtlasStyle::Line> wall_support;if(!a.cut_cache.layers[active][lod].built)for(const auto& w:a.layers[active].walls)wall_support.push_back({{w.a.x,w.a.z},{w.b.x,w.b.z}});
-            for(const auto& hatch:a.cut_cache.Get(active,lod,wall_support)){
-                if(!visible(std::min(hatch.a.x,hatch.b.x),std::min(hatch.a.z,hatch.b.z),std::max(hatch.a.x,hatch.b.x),std::max(hatch.a.z,hatch.b.z)))continue;
+            const int wanted=BbAtlasStyle::CutCache::Level(zoom,scale);
+            if(!a.cut_cache.layers[active][wanted].built){
+                std::vector<BbAtlasStyle::Line> wall_support;for(const auto& w:a.layers[active].walls)wall_support.push_back({{w.a.x,w.a.z},{w.b.x,w.b.z}});
+                a.cut_cache.Step(active,wanted,wall_support,build_budget());
+            }
+            auto draw_hatch=[&](const BbAtlasStyle::Line& hatch){
+                if(!visible(std::min(hatch.a.x,hatch.b.x),std::min(hatch.a.z,hatch.b.z),std::max(hatch.a.x,hatch.b.x),std::max(hatch.a.z,hatch.b.z)))return;
                 // Deterministic worn opacity, never random or frame dependent.
                 const int alpha=23+int(hatch.wear%30);scratch(project(hatch.a.x,hatch.a.z),project(hatch.b.x,hatch.b.z),IM_COL32(166,160,143,alpha));
-            }
+            };
+            // While the wanted level builds: the nearest finished one, else the strokes made so far.
+            const int lod=a.cut_cache.NearestBuilt(active,wanted);
+            if(lod>=0)LinesInView(a.cut_cache.layers[active][lod].strokes,view_x0,view_z0,view_x1,view_z1,draw_hatch);
+            else for(const auto& hatch:a.cut_cache.layers[active][wanted].strokes)draw_hatch(hatch);
         }
         if(active>=0&&active<int(a.layers.size())){
             const auto& layer=a.layers[active];for(const auto& t:layer.triangles)floorTriangle(layer,t,255);

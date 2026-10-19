@@ -49,20 +49,26 @@ int runtime_atlas_flag(uint32_t id) {
     head=ptr(man+0x38); node=head?ptr(head+8):0; found=head;
     const uint32_t group=id/bits, bit=id%bits;
     int stopped=0;
+    /* One read per tree node (left +0, right +0x10, nil +0x19, key +0x20), not three:
+     * each read is a system call, and the open map reads hundreds of flags at once. */
+    unsigned char at[0x38];
     for(int depth=0;depth<64;++depth) {
-        unsigned char nil=1; uint32_t key=0;
-        if(!node || !read_mem(node+0x19,&nil,1))return -1;
-        if(nil){stopped=1;break;}
-        if(!read_mem(node+0x20,&key,4))return -1;
-        if(key<group)node=ptr(node+0x10);
-        else {found=node;node=ptr(node);}
+        uint32_t key=0;
+        if(!node || !read_mem(node,at,0x24))return -1;
+        if(at[0x19]){stopped=1;break;}
+        memcpy(&key,at+0x20,4);
+        if(key<group)memcpy(&node,at+0x10,sizeof(node));
+        else {found=node;memcpy(&node,at,sizeof(node));}
     }
     uint32_t key=0,kind=0;uintptr_t data=0;
-    if(!stopped || found==head || !read_mem(found+0x20,&key,4) || key!=group || !read_mem(found+0x28,&kind,4))return -1;
-    if(kind==2)data=ptr(found+0x30);
+    if(!stopped || found==head || !read_mem(found,at,0x38))return -1;
+    memcpy(&key,at+0x20,4);memcpy(&kind,at+0x28,4);
+    if(key!=group)return -1;
+    if(kind==2)memcpy(&data,at+0x30,sizeof(data));
     else if(kind==1) {
         uint32_t stride=0,index=0;uintptr_t pool=ptr(man+0x28);
-        if(!pool || !read_mem(man+0x20,&stride,4) || stride<125 || stride>4096 || !read_mem(found+0x30,&index,4))return -1;
+        memcpy(&index,at+0x30,4);
+        if(!pool || !read_mem(man+0x20,&stride,4) || stride<125 || stride>4096)return -1;
         uint64_t offset=(uint64_t)stride*index;if(offset>UINT32_MAX)return -1;
         data=pool+(uintptr_t)offset;
     } else return -1;

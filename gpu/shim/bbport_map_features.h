@@ -29,5 +29,6 @@ bool FogEnabled();
 const std::string& Error();
 bool Revealed(const std::string& area,float x,float y,float z);
 bool NpcVisible(const std::string& area,int entity);
-std::vector<Pickup> Pickups(const std::string& area);
+// Valid until the next Refresh.
+const std::vector<Pickup>& Pickups(const std::string& area);
 }

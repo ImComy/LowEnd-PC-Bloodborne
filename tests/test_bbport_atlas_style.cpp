@@ -49,6 +49,16 @@ static void Synthetic(){
     FloorIndex floor;floor.Build({tri({1,.001f},{1.001f,-.001f},{1,-.001f})});
     const auto fragments=floor.Outside({0,0},{2,0},1);assert(fragments.size()==2);VerifyOutside(fragments,floor);
     CutCache unsupported;unsupported.Build({},1);assert(unsupported.Get(0,0,{{{0,0},{8,0}}}).empty());
+    // A level built in slices (the map's per-frame budget) matches one built at once.
+    const std::vector<Line> long_walls={{{0,0},{8,0}},{{8,0},{8,8}},{{0,8},{0,0}},{{30,30},{35,30}}};
+    for(int lod:{0,3,9}){
+        CutCache whole,sliced;whole.Build({tri({0,0},{8,0},{0,8}),tri({8,0},{8,8},{0,8})},1);sliced.Build({tri({0,0},{8,0},{0,8}),tri({8,0},{8,8},{0,8})},1);
+        assert(sliced.NearestBuilt(0,lod)==-1);
+        int calls=0;while(!sliced.Step(0,lod,long_walls,0)){++calls;assert(!sliced.Built(0,lod));}
+        assert(calls>0&&sliced.Built(0,lod)&&sliced.NearestBuilt(0,lod)==lod&&sliced.NearestBuilt(0,lod+1)==lod);
+        const auto& a=whole.Get(0,lod,long_walls);const auto& b=sliced.Get(0,lod,{});assert(a.size()==b.size()&&!a.empty());
+        for(size_t i=0;i<a.size();++i)assert(a[i].a.x==b[i].a.x&&a[i].a.z==b[i].a.z&&a[i].b.x==b[i].b.x&&a[i].b.z==b[i].b.z&&a[i].wear==b[i].wear);
+    }
 }
 int main(int argc,char** argv){
     Synthetic();

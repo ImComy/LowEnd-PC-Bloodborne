@@ -31,6 +31,13 @@ static void Synthetic(){
     c.Build({{outer,square(0,2,8,8)}},empty);assert(Sum(c)==0);
     // Exact narrow same-layer floors must be excluded, not sampled away.
     std::vector<BbAtlasStyle::FloorIndex> narrow(1);narrow[0].Build({tri({4,0},{4.001f,10},{4,10}),tri({4,0},{4.001f,0},{4.001f,10})});c.Build({{outer,hole}},narrow);Verify(c,narrow);assert(Sum(c)<36);
+    // Hatches built in slices (the map's per-frame budget) match ones built at once.
+    {Cache whole,sliced;const auto big=square(-50,-50,50,50),gaps=square(-40,-40,40,40);whole.Build({{big,gaps}},empty);sliced.Build({{big,gaps}},empty);
+     const int lod=1;assert(sliced.layers[0].size()>1&&sliced.NearestReady(0,lod)==-1);
+     int calls=0;while(!sliced.Step(0,lod,0)){++calls;assert(!sliced.Ready(0,lod));}
+     assert(calls>0&&sliced.Ready(0,lod)&&sliced.NearestReady(0,lod+2)==lod);
+     const auto& a=whole.Get(0,lod);const auto& b=sliced.Get(0,lod);assert(a.size()==b.size()&&!a.empty());
+     for(size_t i=0;i<a.size();++i)assert(a[i].a.x==b[i].a.x&&a[i].a.z==b[i].a.z&&a[i].b.x==b[i].b.x&&a[i].b.z==b[i].b.z&&a[i].wear==b[i].wear);}
     std::puts("ATLAS_INTERIORS_SYNTHETIC_PASS");
 }
 int main(int argc,char** argv){Synthetic();if(argc<2)return 0;const std::string root=argv[1];std::ifstream in(root+"/atlas.json");nlohmann::json atlas;in>>atlas;size_t maps=0,total=0;double max_build=0;
