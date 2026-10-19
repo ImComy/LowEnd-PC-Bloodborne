@@ -17,6 +17,23 @@ using namespace BbOverlayPreview;
 // What bb-probe provides to the library; the preview never restarts or runs game code.
 extern "C" void runtime_restart(void) {}
 extern "C" std::uint64_t runtime_disabled_optimizations = 0;
+// Game state the map, the atlas and the menu sounds read: nothing is open, nothing is known.
+extern "C" {
+#include "../../src/runtime_atlas_state.h"
+#include "../../src/runtime_map.h"
+#include "../../src/runtime_menu_sound.h"
+int runtime_atlas_flag(uint32_t) { return 0; }
+int runtime_map_location(BbMapLocation*) { return 0; }
+uintptr_t runtime_atlas_player_token(void) { return 0; }
+int runtime_map_menu_open(void) { return 0; }
+int runtime_map_menu_state(BbMapMenu*) { return 0; }
+uint32_t runtime_map_confirm_button(void) { return 0; }
+void runtime_audio_menu_event(int) {}
+void runtime_audio_menu_stats(BbMenuSoundStats*) {}
+int runtime_atlas_travel_request(const BbAtlasTravelDestination*) { return 0; }
+int runtime_atlas_travel_status(void) { return 0; }
+int runtime_atlas_travel_supported(void) { return 0; }
+}
 
 // The game frame behind the guide: a PNG of any size (avcodec, as DecodePng without its limit).
 static SDL_Texture* LoadBackground(SDL_Renderer* renderer, const char* path) {
