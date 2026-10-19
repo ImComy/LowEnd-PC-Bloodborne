@@ -43,6 +43,8 @@ inline constexpr Effect Effects[] = {
     {"cheat_silent", "Cheat: enemies cannot hear you", false},
     {"cheat_rally_no_decay", "Cheat: Rally never decays", false},
     {"cheat_enemy_control", "Cheat: control targeted enemy (R3 / L3)", false},
+    {"cheat_no_stamina", "Cheat: no stamina use", false},
+    {"cheat_stamina_out_of_combat", "Cheat: no stamina use out of combat", false},
     {"tweak_no_rally", "Disable Rally (health recovery)", false},
     {"tweak_camera_distance", "Increase camera distance", false},
     {"tweak_no_camera_rotation", "Disable automatic camera rotation", false},

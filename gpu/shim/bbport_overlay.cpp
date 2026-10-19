@@ -517,6 +517,10 @@ void Hint(const char* text) {
     }
 }
 
+bool IsCheat(int e) { return !std::strncmp(BbSettings::Effects[e].key, "cheat_", 6); }
+// The stamina cheats are set each frame (src/runtime_stamina.c), not patched at start.
+bool LiveSetting(int e) { return std::strstr(BbSettings::Effects[e].key, "stamina") != nullptr; }
+
 bool RestartNeeded() {
     const auto& s = BbSettings::Get();
     bool restart = s.object_motion != s.startup_object_motion ||
@@ -524,7 +528,7 @@ bool RestartNeeded() {
                    s.live_resolution != s.startup_live_resolution ||
                    BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e)
-        restart |= s.effects[e] != s.startup_effects[e];
+        restart |= !LiveSetting(e) && s.effects[e] != s.startup_effects[e];
     return restart;
 }
 
@@ -555,8 +559,8 @@ bool NativePcMenuAvailable() {
 
 bool ExtrasRestartNeeded() {
     const auto& s = BbSettings::Get();
-    for (int e = 10; e < 15; ++e) // Cheats: native PC menu has no room for this section.
-        if (s.effects[e] != s.startup_effects[e]) return true;
+    for (int e = 0; e < BbSettings::EffectCount; ++e) // Cheats: native PC menu has no room for this section.
+        if (IsCheat(e) && !LiveSetting(e) && s.effects[e] != s.startup_effects[e]) return true;
     for (int e = BbSettings::FirstEnhancement; e < BbSettings::EffectCount; ++e)
         if (s.effects[e] != s.startup_effects[e]) return true;
     return false;
@@ -971,8 +975,8 @@ void ModsTab() {
         Note(mod_selection_error.c_str(), Ink::Accent);
     if (!native) Section("Gameplay and debug");
     else Section("Cheats (restart required)");
-    for (int e = native ? 10 : 8;
-         e < (native ? 15 : BbSettings::FirstEnhancement); ++e) {
+    for (int e = native ? 0 : 8; e < BbSettings::FirstEnhancement; ++e) {
+        if (native && !IsCheat(e)) continue;
         const char* label = BbSettings::Effects[e].label;
         if (!std::strncmp(label, "Cheat: ", 7)) label += 7;
         const std::string shown = std::string(1, char(std::toupper((unsigned char)label[0]))) + (label + 1);
