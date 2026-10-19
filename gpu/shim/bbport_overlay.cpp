@@ -74,7 +74,7 @@ namespace BbOverlay {
 namespace {
 
 std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
-bool initialized = false;
+std::atomic<bool> initialized{false};
 std::atomic<bool> menu_open{false};
 std::atomic<std::int64_t> menu_opened_ms{0};
 bool l3_down = false, r3_down = false;
@@ -84,8 +84,9 @@ bool rail_focused_last = false, page_focused_last = false;
 bool dirty = false; // settings changed while open: saved on close
 bool mod_selection_changed = false;
 std::string mod_selection_error;
-// The game's text dialog (SetTextEntry), guarded by imgui_mutex.
-bool text_entry_active = false;
+// The game's text dialog (SetTextEntry), guarded by imgui_mutex. The flag is atomic:
+// RoutePad reads it on the game's pad thread without that lock.
+std::atomic<bool> text_entry_active{false};
 std::string text_entry_prompt, text_entry_text;
 float base_scale = 1.0f;
 ImFont* guide_serif_font = nullptr; // Georgia from Windows when present; embedded font remains the fallback.
@@ -1843,7 +1844,7 @@ bool HandleEvent(const SDL_Event& event) {
 
 bool Visible() {
     return initialized && (menu_open || text_entry_active || BbSettings::Get().show_fps ||
-                           BbMap::IsOpen() || BbAtlasMenu::Visible() ||
+                           BbMap::IsOpen() || BbAtlasMenu::Visible() || BbAtlasMenu::Animating() ||
                            active_toast.load() >= 0 || queued_toasts.load() > 0);
 }
 
@@ -1852,7 +1853,9 @@ bool CapturesInput() {
 }
 
 uint32_t RoutePad(uint32_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
-    std::scoped_lock lock{imgui_mutex};
+    // Runs on the game's pad read. Not under imgui_mutex: the present thread holds it for a
+    // whole overlay frame (the open map's drawing included), which stalled the game.
+    // BbAtlasMenu and BbMap guard their own state.
     if (!initialized || menu_open || text_entry_active) return buttons;
     return BbAtlasMenu::RoutePad(buttons, lx, ly, rx, ry);
 }

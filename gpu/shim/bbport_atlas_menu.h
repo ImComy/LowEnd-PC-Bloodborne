@@ -4,6 +4,8 @@
 union SDL_Event;
 namespace BbAtlasMenu {
 bool Visible();
+// The tile is still fading out with the game's menu (a submenu opened over it).
+bool Animating();
 bool Interacting();
 bool UsesControllerGlyphs();
 bool UsesPlayStationGlyphs();
