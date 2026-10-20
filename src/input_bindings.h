@@ -44,6 +44,7 @@ int bb_binding_mouse(int action); /* 1..7, 0 when unbound */
  * SDL's key state (NULL: none), `mouse` bit n-1 for mouse input n. */
 typedef struct {
     uint32_t buttons;
+    uint32_t mouse_buttons; /* the part of buttons only mouse inputs hold */
     int touch_side;
     int lx, ly, rx, ry;
     bool any;

@@ -245,6 +245,7 @@ static SDL_Gamepad *current_gamepad(void) {
     }
     return gamepad;
 }
+static uint32_t host_mouse_buttons; /* the pad bits only mouse bindings set (sample_host) */
 static void sample_host(PadData *d) {
     memset(d,0,sizeof(*d));
     d->left_x=d->left_y=d->right_x=d->right_y=128;
@@ -340,9 +341,14 @@ static void sample_host(PadData *d) {
     }
     /* In a menu the pointer owns the mouse (menu_pointer.h): a left click goes to the row under
      * it, a right click is the back button, the wheel scrolls; the buttons' gameplay bindings
-     * (Mouse1 attack is R1, a tab switch in menus) wait until the menu is closed. */
+     * (Mouse1 attack is R1, a tab switch in menus) wait until the menu is closed. With the strong
+     * attack modifier held, the clicks keep their bindings instead: Shift (Ctrl with the keyboard
+     * prompts) + left click is R2 and + right click L2, the menus' shortcut buttons (the Storage
+     * switch at a messenger, #64), which a menu could not otherwise get from the mouse. */
     static uint32_t mouse_was;
-    if (bb_menu_pointer_owns_mouse()) {
+    const int mod_key=bb_binding_key(BIND_STRONG_MOD), mod_mouse=bb_binding_mouse(BIND_STRONG_MOD);
+    const int modifier=(k && mod_key>0 && mod_key<nkeys && k[mod_key]) || (mod_mouse && (mouse>>(mod_mouse-1))&1);
+    if (bb_menu_pointer_owns_mouse() && !(modifier && (mouse & 3u))) {
         const uint32_t edge=mouse & ~mouse_was;
         if (edge & 1u) bb_menu_pointer_click();
         if (edge & 2u) bb_menu_pointer_back();
@@ -356,6 +362,8 @@ static void sample_host(PadData *d) {
     d->buttons|=bb_menu_pointer_buttons();
     BindOutput o;
     bb_bindings_apply(k,nkeys,mouse,&o);
+    /* What only the mouse holds (left click is R1, attack): neither gamepad nor key gives it. */
+    host_mouse_buttons=o.mouse_buttons & ~d->buttons;
     if (o.any) {
         d->buttons|=o.buttons;
         if (o.buttons & BTN_L2) d->l2=255;
@@ -520,8 +528,12 @@ static void sample_game(PadData *d) {
     const uint32_t raw_buttons=d->buttons;
     uint8_t sampled_axes[4]={d->left_x,d->left_y,d->right_x,d->right_y},sampled_triggers[2]={d->l2,d->r2};
     const int capture_before=bbgpu_overlay_captures_input();
-    /* Hunter's Atlas: the quick menu's Map tile and the open map take the buttons they use. */
-    d->buttons=bbgpu_atlas_route_pad(d->buttons,d->left_x,d->left_y,d->right_x,d->right_y);
+    /* Hunter's Atlas: the quick menu's Map tile and the open map take the buttons they use. The
+     * open map handles the mouse itself (drag to pan, click a lamp to travel), so the buttons
+     * the mouse's bindings hold stay out of its pad input: a left click is R1, which the map
+     * reads as the next lamp, and every drag or travel click also moved the selection (#41). */
+    const uint32_t routed_in=capture_before ? d->buttons & ~host_mouse_buttons : d->buttons;
+    d->buttons=bbgpu_atlas_route_pad(routed_in,d->left_x,d->left_y,d->right_x,d->right_y);
     if (capture_before || bbgpu_overlay_captures_input()) {
         bb_atlas_remember(&atlas_release,raw_buttons,sampled_axes,sampled_triggers);
         d->buttons=0; d->left_x=d->left_y=d->right_x=d->right_y=128; d->l2=d->r2=0; d->touch_count=0;
