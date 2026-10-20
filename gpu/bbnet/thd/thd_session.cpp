@@ -6,6 +6,7 @@
 
 #include "thd.h"
 #include "thd_internal.h"
+#include "../../../src/code_check.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <thread>
 
 #ifdef _WIN32
@@ -208,10 +210,13 @@ HttpResult Perform(const std::string& base, const std::string& path, const std::
     if (const std::string token = AccountToken(); !token.empty()) {
         headers.emplace("X-BB-Token", token);
     }
+    // Connecting and sending stay short; only the read waits as long as the request asks (a
+    // long poll waits 30 s for its answer, its connection and TLS a few seconds).
+    const auto short_timeout = std::min(timeout, std::chrono::milliseconds(5000));
     auto send = [&] {
-        cli->set_connection_timeout(timeout);
+        cli->set_connection_timeout(short_timeout);
         cli->set_read_timeout(timeout);
-        cli->set_write_timeout(timeout);
+        cli->set_write_timeout(short_timeout);
         return post ? cli->Post(path, headers, *post, "application/json") : cli->Get(path, headers);
     };
     HttpResult r;
@@ -703,18 +708,57 @@ namespace {
 std::mutex g_pollmu;
 std::condition_variable g_pollcv;
 std::atomic<bool> g_pollrun{false};
+// Each start gets a new generation: a poller of an earlier one (still waiting on a long poll
+// after a stop) ends at its answer instead of polling beside the new one.
+std::atomic<std::uint64_t> g_pollgen{0};
 std::function<void(const Json&)> g_handler;
 long long g_cursor = 0;
 
-void PollerMain() {
+// Long polling (The Hunter's Dream): the server holds an empty poll up to WaitMs and answers
+// it the moment an event for this player arrives, so invites come at once and the clients no
+// longer ask four times a second. Every answer of such a server carries WaitMaxMs.
+constexpr int kPollWaitMs = 25000;
+
+int Jitter(int ms) {
+    thread_local std::mt19937 random{std::random_device{}()};
+    return static_cast<int>(ms * std::uniform_real_distribution<double>(0.8, 1.2)(random));
+}
+
+void PollerMain(std::uint64_t generation) {
     const std::string me = OnlineId();
-    int interval_ms = 250;
-    while (g_pollrun.load()) {
+    const auto current = [generation] {
+        return g_pollrun.load() && g_pollgen.load() == generation;
+    };
+    int wait_ms = kPollWaitMs; // from the first poll; dropped for a server that does not hold polls
+    int backoff_ms = 0;
+    int pause_ms = 0;
+    while (current()) {
         Json body = {{"OnlineId", me}, {"Cursor", g_cursor}, {"Categories", Json::array({"matching2"})}};
+        if (wait_ms > 0) body["WaitMs"] = wait_ms;
         Json reply;
         std::string err;
-        if (NpPost("/np/events/poll", body, reply, err, 4000)) {
-            interval_ms = 250;
+        // The read waits past the server's wait: a shorter one made every empty poll an error.
+        const int timeout_ms = wait_ms > 0 ? wait_ms + 5000 : 4000;
+        // BB_THD_POLL_LOG=1: each poll's wait, time to its answer and result (diagnosis).
+        static const bool poll_log = [] {
+            const char* env = std::getenv("BB_THD_POLL_LOG");
+            return env && env[0] == '1';
+        }();
+        const auto poll_start = std::chrono::steady_clock::now();
+        const bool answered = NpPost("/np/events/poll", body, reply, err, timeout_ms);
+        if (poll_log) {
+            const long long took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - poll_start)
+                                       .count();
+            Log("np: poll WaitMs %d -> %s in %lld ms (WaitMaxMs %lld, HasEvent %lld)", wait_ms,
+                answered ? "answer" : err.c_str(), took, IntOf(reply, "WaitMaxMs", 0),
+                IntOf(reply, "HasEvent", 0));
+        }
+        if (answered) {
+            if (!current()) break; // stopped or restarted while this poll waited
+            backoff_ms = 0;
+            const long long max_wait = IntOf(reply, "WaitMaxMs", 0);
+            wait_ms = max_wait > 0 ? static_cast<int>(std::min<long long>(kPollWaitMs, max_wait)) : 0;
             const long long next = IntOf(reply, "NextCursor", g_cursor);
             if (IntOf(reply, "HasEvent", 0) != 0) {
                 std::function<void(const Json&)> handler;
@@ -738,13 +782,19 @@ void PollerMain() {
                 continue; // drain without waiting while there are events
             }
             g_cursor = std::max(g_cursor, next);
+            if (wait_ms > 0) continue; // the server waited: poll again at once
+            pause_ms = 250;            // a server without long polling: the old pacing
+        } else if (!current()) {
+            break;
         } else if (Refused()) {
-            interval_ms = 60000; // nothing arrives until this PC signs in again
+            pause_ms = 60000; // the server refused the sign-in: nothing arrives until it changes
         } else {
-            interval_ms = interval_ms < 4000 ? interval_ms * 2 : 4000; // the server is away
+            // Network error, timeout, 5xx or 429: 1, 2, 4 ... 30 s with jitter; reset on success.
+            backoff_ms = backoff_ms ? std::min(backoff_ms * 2, 30000) : 1000;
+            pause_ms = Jitter(backoff_ms);
         }
         std::unique_lock lk(g_pollmu);
-        g_pollcv.wait_for(lk, std::chrono::milliseconds(interval_ms), [] { return !g_pollrun.load(); });
+        g_pollcv.wait_for(lk, std::chrono::milliseconds(pause_ms), [&] { return !current(); });
     }
 }
 
@@ -805,7 +855,7 @@ void PollerStart(std::function<void(const Json&)> handler) {
     g_handler = std::move(handler);
     if (g_pollrun.exchange(true)) return;
     g_cursor = 0;
-    std::thread(PollerMain).detach();
+    std::thread(PollerMain, g_pollgen.fetch_add(1) + 1).detach();
     if (!g_keeprun.exchange(true)) std::thread(KeepaliveMain).detach();
 }
 
@@ -828,8 +878,7 @@ constexpr std::uint64_t kCharaStep = 0x2043ee0;      // the login's character st
 constexpr std::uint64_t kSignalingGate = 0x586cc09;  // u8: the NpMatching2 callbacks' gate
 constexpr std::uint64_t kFrpgNetMan = 0x593b120;     // FrpgNetMan* (the singleton's slot)
 constexpr std::uint32_t kAreaOff = 0xa7c, kLevelOff = 0xaa8, kPosOff = 0xaac;
-const std::uint8_t kCharaStepPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
-                                           0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x40};
+constexpr BbCode kCharaStepPrologue = {15, 0x112f66ddc4b76094ull};  // its first instructions
 std::uint8_t* g_image = nullptr;
 
 template <typename T>
@@ -841,8 +890,7 @@ bool ReadGuest(std::uint64_t at, T* out) {
 void SetImage(std::uint8_t* image, std::uint64_t size) {
     g_image = nullptr;
     if (!image || size < kFrpgNetMan + 8 - kImageBase) return;
-    if (std::memcmp(image + (kCharaStep - kImageBase), kCharaStepPrologue,
-                    sizeof(kCharaStepPrologue)) != 0) {
+    if (!bb_code_is(image + (kCharaStep - kImageBase), kCharaStepPrologue)) {
         return; // not 1.09: no game memory is touched
     }
     g_image = image;

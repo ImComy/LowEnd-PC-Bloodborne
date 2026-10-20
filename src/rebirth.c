@@ -35,8 +35,7 @@ enum { ALTAR_BLOCK = 0x18020000 }; /* m24_02_00_00, the Altar of Despair's map *
 enum { REQ_RESET = 72500390, REQ_UNDO = 72500391, FAIL = 72500392, MENU = 72500393 };
 enum { LEVEL_UP_STEP = 7, MENU_WAIT_FRAMES = 120 };
 static const int64_t ECHO_CAP = 999999999; /* the game's own limit */
-static const unsigned char step_prologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
-                                              0x53, 0x50, 0x4d, 0x89, 0xce, 0x48, 0x89, 0xfb};
+static const BbCode step_prologue = {16, 0x7ded7eceb396e10aull};
 
 typedef int64_t (BB_GUEST_ABI *GuestFn)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 static GuestFn fn(uint64_t bn) { return (GuestFn)bb_guest(BB_BN(bn)); }
@@ -346,7 +345,7 @@ int bb_rebirth_install(void) {
         puts("Rebirth: off (pc_rebirth, or the altar's script was not made)");
         return 0;
     }
-    if (bb_hook_entry(BB_BN(STEP_CTOR), step_prologue, sizeof(step_prologue), (void *)step_hook)) {
+    if (bb_hook_entry(BB_BN(STEP_CTOR), step_prologue, (void *)step_hook)) {
         printf("Rebirth: off - the menu step constructor: %s\n", bb_hooks_error());
         return 0;
     }

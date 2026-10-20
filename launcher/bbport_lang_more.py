@@ -49,6 +49,7 @@ MORE_KEYS = [
     'DLC folder',
     'Choose the DLC folder',
     'Your dumped add-ons, one folder each named like SPEXPANSIONDLC03 (The Old Hunters). Only needed with a base-game dump; the Game of the Year edition (CUSA03173) has it.',
+    'Japanese/Asian buttons: Circle confirms and interacts, Cross dodges',
 ]
 
 MORE = {
@@ -99,6 +100,7 @@ MORE = {
         'Папка DLC',
         'Выберите папку DLC',
         'Ваши дампы дополнений, по папке на каждое, с именем вроде SPEXPANSIONDLC03 (The Old Hunters). Нужно только для дампа базовой игры: в издании Game of the Year (CUSA03173) оно уже есть.',
+        'Японская раскладка: Круг — подтверждение и действие, Крест — уклонение',
     ],
     'ar': [
         'اللعب التعاوني عبر الإنترنت',
@@ -147,6 +149,7 @@ MORE = {
         'مجلد المحتوى الإضافي',
         'اختر مجلد المحتوى الإضافي',
         'نسخ الإضافات الخاصة بك، مجلد لكل إضافة باسم مثل SPEXPANSIONDLC03 (The Old Hunters). مطلوب فقط مع نسخة اللعبة الأساسية؛ إصدار Game of the Year (CUSA03173) يتضمنها.',
+        'أزرار يابانية/آسيوية: الدائرة للتأكيد والتفاعل، وX للمراوغة',
     ],
     'es': [
         'Cooperativo en línea',
@@ -195,6 +198,7 @@ MORE = {
         'Carpeta de DLC',
         'Elige la carpeta de DLC',
         'Tus add-ons volcados, una carpeta por cada uno con un nombre como SPEXPANSIONDLC03 (The Old Hunters). Solo hace falta con un volcado del juego base; la edición Game of the Year (CUSA03173) ya lo incluye.',
+        'Botones japoneses/asiáticos: Círculo confirma e interactúa, Equis esquiva',
     ],
     'pt': [
         'Cooperativo online',
@@ -243,6 +247,7 @@ MORE = {
         'Pasta de DLC',
         'Escolha a pasta de DLC',
         'Seus add-ons extraídos, uma pasta para cada um com nome como SPEXPANSIONDLC03 (The Old Hunters). Só é necessário com um dump do jogo base; a edição Game of the Year (CUSA03173) já inclui.',
+        'Botões japoneses/asiáticos: Círculo confirma e interage, Xis esquiva',
     ],
     'fr': [
         'Coopération en ligne',
@@ -291,6 +296,7 @@ MORE = {
         'Dossier des DLC',
         'Choisissez le dossier des DLC',
         "Vos extensions extraites, un dossier chacune nommé comme SPEXPANSIONDLC03 (The Old Hunters). Nécessaire seulement avec un dump du jeu de base ; l'édition Game of the Year (CUSA03173) l'inclut.",
+        'Boutons japonais/asiatiques : Rond valide et interagit, Croix esquive',
     ],
     'de': [
         'Online-Koop',
@@ -339,6 +345,7 @@ MORE = {
         'DLC-Ordner',
         'DLC-Ordner wählen',
         'Deine gedumpten Erweiterungen, je ein Ordner mit einem Namen wie SPEXPANSIONDLC03 (The Old Hunters). Nur bei einem Dump des Grundspiels nötig; die Game of the Year Edition (CUSA03173) enthält sie.',
+        'Japanische/asiatische Tasten: Kreis bestätigt und interagiert, Kreuz weicht aus',
     ],
     'it': [
         'Cooperativa online',
@@ -387,6 +394,7 @@ MORE = {
         'Cartella DLC',
         'Scegli la cartella DLC',
         "I tuoi contenuti aggiuntivi estratti, una cartella ciascuno con un nome come SPEXPANSIONDLC03 (The Old Hunters). Serve solo con un dump del gioco base; l'edizione Game of the Year (CUSA03173) li include già.",
+        'Tasti giapponesi/asiatici: Cerchio conferma e interagisce, Croce schiva',
     ],
     'pl': [
         'Kooperacja online',
@@ -435,6 +443,7 @@ MORE = {
         'Folder DLC',
         'Wybierz folder DLC',
         'Twoje zrzuty dodatków, każdy w osobnym folderze o nazwie np. SPEXPANSIONDLC03 (The Old Hunters). Potrzebne tylko przy zrzucie gry podstawowej; edycja Game of the Year (CUSA03173) już je zawiera.',
+        'Przyciski japońskie/azjatyckie: Kółko potwierdza i wchodzi w interakcję, Krzyżyk to unik',
     ],
     'tr': [
         'Çevrim içi ortak oyun',
@@ -483,6 +492,7 @@ MORE = {
         'DLC klasörü',
         'DLC klasörünü seçin',
         'Dökümünü aldığın ek içerikler, her biri SPEXPANSIONDLC03 (The Old Hunters) gibi adlandırılmış ayrı bir klasörde. Yalnızca temel oyun dökümüyle gerekir; Game of the Year sürümü (CUSA03173) bunu zaten içerir.',
+        'Japon/Asya tuşları: Daire onaylar ve etkileşir, Çarpı kaçınır',
     ],
     'zh': [
         '在线合作',
@@ -531,6 +541,7 @@ MORE = {
         'DLC 文件夹',
         '选择 DLC 文件夹',
         '你转储的追加内容，每个一个文件夹，名称如 SPEXPANSIONDLC03（The Old Hunters）。仅在使用本体游戏转储时需要；年度版（CUSA03173）已包含。',
+        '日版/亚洲版按键：圆圈键确认和互动，叉键闪避',
     ],
     'ja': [
         'オンライン協力プレイ',
@@ -579,6 +590,7 @@ MORE = {
         'DLC フォルダー',
         'DLC フォルダーを選択',
         'ダンプした追加コンテンツ。SPEXPANSIONDLC03（The Old Hunters）のような名前で 1 つずつフォルダーに入れてください。本編のダンプを使う場合のみ必要で、Game of the Year Edition（CUSA03173）には含まれています。',
+        '日本/アジア配置：○で決定・調べる、×で回避',
     ],
     'ko': [
         '온라인 협동',
@@ -627,5 +639,6 @@ MORE = {
         'DLC 폴더',
         'DLC 폴더 선택',
         '덤프한 추가 콘텐츠를 SPEXPANSIONDLC03 (The Old Hunters) 같은 이름의 폴더에 하나씩 넣으세요. 본편 덤프를 쓸 때만 필요하며, Game of the Year 에디션(CUSA03173)에는 이미 포함되어 있습니다.',
+        '일본/아시아 버튼 배치: 동그라미로 결정·상호작용, 엑스로 회피',
     ],
 }

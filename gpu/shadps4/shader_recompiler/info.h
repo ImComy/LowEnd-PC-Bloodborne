@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <span>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -254,8 +255,11 @@ struct Info : InfoPersistent {
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
-        if (srt_info.walker_func) {
-            srt_info.walker_func(user_data.data(), flattened_ud_buf.data());
+        if (srt_info.walker_func &&
+            !RunSrtWalker(srt_info.walker_func, user_data.data(), flattened_ud_buf.data())) {
+            // The walk faulted part-way: what it wrote is not a table's contents.
+            const size_t keep = std::min(user_data.size(), flattened_ud_buf.size());
+            std::fill(flattened_ud_buf.begin() + keep, flattened_ud_buf.end(), 0u);
         }
     }
 

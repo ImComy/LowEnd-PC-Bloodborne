@@ -24,16 +24,18 @@
 #include <unistd.h>
 #endif
 /* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. BB_DMEM_MB raises it (the resolution
- * patches above 1080p need about 4 GiB more; run.sh sets it). */
+ * patches above 1080p need about 4 GiB more; run.sh sets it). pool() falls back to the retail
+ * size when Windows refuses the larger pool. */
+#define RETAIL_POOL (UINT64_C(5056) * 1024 * 1024)
+static uint64_t pool_bytes;
 static uint64_t pool_size_bytes(void) {
-    static uint64_t size;
-    if (!size) {
+    if (!pool_bytes) {
         const char *env = getenv("BB_DMEM_MB");
         uint64_t mb = env ? strtoull(env, NULL, 10) : 0;
         if (mb < 5056 || mb > 16384) mb = 5056;
-        size = mb * 1024 * 1024;
+        pool_bytes = mb * 1024 * 1024;
     }
-    return size;
+    return pool_bytes;
 }
 #define POOL_SIZE pool_size_bytes()
 #define FLEXIBLE_SIZE (UINT64_C(448) * 1024 * 1024)
@@ -243,7 +245,7 @@ static int host_protect(uintptr_t address, uint64_t size, int prot) {
 /* Released pages read as zero when reused, like the memfd's punched holes. */
 static void host_discard(uint64_t phys, uint64_t size) { commit_backing(phys,size); memset(backing_base+phys,0,size); }
 /* Direct memory occupies [0,POOL_SIZE) of the section, flexible memory [POOL_SIZE,+FLEX_SPAN). */
-static int pool(void) {
+static int pool_create(void) {
     if (backing_base) return 0;
     runtime_memory_reserve();
     uint64_t bytes=POOL_SIZE+FLEX_SPAN;
@@ -265,15 +267,19 @@ static int pool(void) {
     }
     if (!section) { fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (error %lu); is the page file large enough?\n",bytes>>20,GetLastError()); return -1; }
     backing_base=MapViewOfFile3(section,GetCurrentProcess(),NULL,0,bytes,0,PAGE_READWRITE,NULL,0);
-    return backing_base ? 0 : -1;
+    if (backing_base) return 0;
+    fprintf(stderr,"Runtime: cannot map %" PRIu64 " MiB of guest memory (error %lu)\n",bytes>>20,GetLastError());
+    CloseHandle(section); section=NULL; commit_on_map=0;
+    return -1;
 }
 #else
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
-static int pool(void) {
-    if (pool_fd>=0) return 0;
-    pool_fd=memfd_create("bb-guest-memory", MFD_CLOEXEC);
-    if (pool_fd<0 || ftruncate(pool_fd,(off_t)(POOL_SIZE+FLEX_SPAN))) return -1;
-    void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
+static int pool_create(void) {
+    if (backing_base) return 0;
+    if (pool_fd<0) pool_fd=memfd_create("bb-guest-memory", MFD_CLOEXEC);
+    void *view=MAP_FAILED;
+    if (pool_fd>=0 && !ftruncate(pool_fd,(off_t)(POOL_SIZE+FLEX_SPAN)))
+        view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
     if (view==MAP_FAILED) return -1;
     backing_base=view;
     return 0;
@@ -291,6 +297,22 @@ static void host_discard(uint64_t phys, uint64_t size) {
     fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
 }
 #endif
+/* A pool larger than the PS4's (BB_DMEM_MB) that the host refuses (Windows error 1450 on some
+ * laptops) falls back to the retail 5056 MiB instead of stopping the game, as Awakenchan's
+ * 0.9.34 beta 4 does; resolutions that need the larger pool may then run out of direct memory.
+ * Called with the write lock held. BB_TEST_REFUSE_DMEM=1 refuses the larger pool (tests). */
+static int pool(void) {
+    if (backing_base) return 0;
+    const char *refuse=getenv("BB_TEST_REFUSE_DMEM");
+    int refused=refuse && refuse[0]=='1' && POOL_SIZE>RETAIL_POOL;
+    if (!refused && !pool_create()) return 0;
+    if (POOL_SIZE<=RETAIL_POOL) return -1;
+    printf("Runtime: the host refused %" PRIu64 " MiB of direct memory (BB_DMEM_MB); falling back to "
+           "the PS4's 5056 MiB. High output resolutions may run out of memory: lower the output "
+           "resolution if the game stops\n",POOL_SIZE>>20);
+    pool_bytes=RETAIL_POOL;
+    return pool_create();
+}
 static void queue_hook(int kind, uintptr_t address, uint64_t size) {
     GpuRange hook = kind==HOOK_MAP ? hook_map : kind==HOOK_UNMAP ? hook_unmap : hook_invalidate;
     if (!hook) return;
@@ -428,16 +450,24 @@ static int direct_range_allocated(uint64_t phys, uint64_t size) {
     return 1;
 }
 
-static ABI uint64_t direct_size(void) { return POOL_SIZE; }
+/* The pool is created first so that the size reported is the one the host granted. */
+static ABI uint64_t direct_size(void) {
+    write_lock();
+    pool();
+    uint64_t size=POOL_SIZE;
+    write_unlock();
+    return size;
+}
 static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
                                   uint64_t alignment, int type, int64_t *out) {
     if (!alignment) alignment = PAGE;
     if (!out || low < 0 || high < 0 || !size || size % PAGE || !valid_alignment(alignment) || type < 0 || type > 10)
         return INVALID;
-    uint64_t end = (uint64_t)high < POOL_SIZE ? (uint64_t)high : POOL_SIZE;
-    if ((uint64_t)low >= end || size > end - (uint64_t)low) return NO_SPACE;
     write_lock();
     if (pool()) { write_unlock(); return NO_MEMORY; }
+    /* After pool(): the pool may have fallen back to the retail size. */
+    uint64_t end = (uint64_t)high < POOL_SIZE ? (uint64_t)high : POOL_SIZE;
+    if ((uint64_t)low >= end || size > end - (uint64_t)low) { write_unlock(); return NO_SPACE; }
     uint64_t start = align_up((uint64_t)low, alignment);
     int slot = -1;
     for (int i=0; i<LIMIT; ++i) if (!blocks[i].used) { slot=i; break; }
@@ -679,30 +709,128 @@ uintptr_t runtime_memory_resolve(const char *name) {
     return RUNTIME_LOOKUP(exports,name);
 }
 /* Host-owned memory the guest can see (image, stacks, trampolines) lives in
- * [LOW_MIN, USER_MIN): PS4 code packs pointers into 40-bit fields. */
+ * [LOW_MIN, HANDLES_MIN): PS4 code packs pointers into 40-bit fields. The image is mapped first,
+ * at LOW_MIN. Handle slabs (runtime_low_alloc) take [HANDLES_MIN, USER_MIN), so the image's
+ * address does not depend on what allocated a handle before it. */
 #define LOW_MIN UINT64_C(0x0800000000)
-static uintptr_t low_next=LOW_MIN;
-void *runtime_low_map(size_t size, int prot) {
+#define HANDLES_MIN UINT64_C(0x0f00000000)
+static uintptr_t low_next=LOW_MIN, handles_next=HANDLES_MIN;
+static void *low_map_from(uintptr_t *next, uintptr_t limit, size_t size, int prot) {
     size=align_up(size,PAGE);
     write_lock();
 #ifdef _WIN32
     void *p=NULL;
-    while (!p && low_next+size<=USER_MIN) {
-        p=VirtualAlloc((void *)low_next,size,MEM_RESERVE|MEM_COMMIT,win_prot(prot));
-        low_next+=size+UINT64_C(65536); /* unmapped gap catches overruns; allocation granularity */
+    while (!p && *next+size<=limit) {
+        p=VirtualAlloc((void *)*next,size,MEM_RESERVE|MEM_COMMIT,win_prot(prot));
+        *next+=size+UINT64_C(65536); /* unmapped gap catches overruns; allocation granularity */
     }
     write_unlock();
     return p;
 #else
     void *p=MAP_FAILED;
-    while (low_next+size<=USER_MIN) {
-        p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
-        low_next+=size+PAGE; /* unmapped gap catches overruns */
+    while (*next+size<=limit) {
+        p=mmap((void *)*next,size,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+        *next+=size+PAGE; /* unmapped gap catches overruns */
         if (p!=MAP_FAILED) break;
     }
     write_unlock();
     return p==MAP_FAILED ? NULL : p;
 #endif
+}
+void *runtime_low_map(size_t size, int prot) { return low_map_from(&low_next,HANDLES_MIN,size,prot); }
+/* Host records the guest holds pointers to (ScePthread handles, the TLS block with the TCB,
+ * mutex, cond, rwlock and attribute handles) come from 1 MiB slabs below the PS4 range. The
+ * game keeps lock owners in 40 bits: its spin lock (eboot 0x20368c0) stores
+ * scePthreadSelf() & 0xffffffffff and compares that with the whole handle, so a thread whose
+ * handle is above 1 TiB takes the lock, does not see itself as the owner and waits on the lock's
+ * semaphore for good (issue #51: CSClothThread1 on the warp to the Hunter's Dream). Windows'
+ * heap grows above 1 TiB once the space below the PS4 reservation is used up; Linux keeps malloc
+ * low with mallopt (probe.c). Awakenchan's 0.9.32 beta 14 fixed the same loading freeze.
+ * Blocks are zeroed and 64-byte aligned behind a 64-byte header; BB_LOW_HANDLES=0 takes them
+ * from the host heap as before. */
+#define LOW_SLAB (UINT64_C(1)<<20)
+#define LOW_HEADER 64
+#define LOW_CLASSES 7 /* 128 B .. 8 KiB including the header */
+#define LOW_MAGIC UINT32_C(0x4c4f5748)
+enum { LOW_LARGE=LOW_CLASSES, LOW_HOST };
+typedef struct { uint32_t magic, kind; } LowHeader;
+typedef struct LowFree { struct LowFree *next; } LowFree;
+static pthread_mutex_t low_lock=PTHREAD_MUTEX_INITIALIZER;
+static LowFree *low_free[LOW_CLASSES];
+static unsigned char *low_slab, *low_slab_end;
+static int low_handles=-1, low_full, low_high_logged;
+static unsigned char *low_host(size_t total) {
+#ifdef _WIN32
+    return _aligned_malloc(total,LOW_HEADER);
+#else
+    return aligned_alloc(LOW_HEADER,total);
+#endif
+}
+/* Called with low_lock held. */
+static unsigned char *low_carve(size_t total, uint32_t *kind) {
+    if (low_handles<0) {
+        const char *e=getenv("BB_LOW_HANDLES");
+        low_handles=!(e && e[0]=='0');
+        if (!low_handles) puts("Runtime: guest thread and lock handles from the host heap (BB_LOW_HANDLES=0)");
+    }
+    if (!low_handles || low_full) return NULL;
+    unsigned c=0;
+    while (c<LOW_CLASSES && (size_t)128<<c<total) ++c;
+    if (c==LOW_CLASSES) {
+        *kind=LOW_LARGE; /* kept when freed: only TLS blocks of huge TLS segments get here */
+        unsigned char *p=low_map_from(&handles_next,USER_MIN,total,PROT_READ|PROT_WRITE);
+        if (!p) low_full=1;
+        return p;
+    }
+    *kind=c;
+    size_t bytes=(size_t)128<<c;
+    if (low_free[c]) { LowFree *f=low_free[c]; low_free[c]=f->next; return (unsigned char *)f; }
+    if ((size_t)(low_slab_end-low_slab)<bytes) {
+        unsigned char *slab=low_map_from(&handles_next,USER_MIN,LOW_SLAB,PROT_READ|PROT_WRITE);
+        if (!slab) {
+            low_full=1;
+            fputs("Runtime: no room left below 1 TiB for guest handles; using the host heap\n",stderr);
+            return NULL;
+        }
+        if (!low_slab) printf("Runtime: guest thread and lock handles below 1 TiB at %p (BB_LOW_HANDLES=0 turns this off)\n",(void *)slab);
+        low_slab=slab; low_slab_end=slab+LOW_SLAB;
+    }
+    unsigned char *p=low_slab; low_slab+=bytes;
+    return p;
+}
+void *runtime_low_alloc(size_t size) {
+    if (size>SIZE_MAX-2*LOW_HEADER) return NULL;
+    size_t total=(size+2*LOW_HEADER-1)&~(size_t)(LOW_HEADER-1);
+    uint32_t kind=LOW_HOST;
+    pthread_mutex_lock(&low_lock);
+    unsigned char *block=low_carve(total,&kind);
+    pthread_mutex_unlock(&low_lock);
+    if (!block && !(block=low_host(total))) return NULL;
+    memset(block,0,total);
+    *(LowHeader *)block=(LowHeader){LOW_MAGIC,kind};
+    unsigned char *p=block+LOW_HEADER;
+    if ((uintptr_t)p+size>UINT64_C(1)<<40 && !__atomic_exchange_n(&low_high_logged,1,__ATOMIC_RELAXED))
+        fprintf(stderr,"Runtime: guest handle %p is above 1 TiB; the game's 40-bit lock owners cannot hold it\n",(void *)p);
+    return p;
+}
+void runtime_low_free(void *pointer) {
+    if (!pointer) return;
+    unsigned char *block=(unsigned char *)pointer-LOW_HEADER;
+    LowHeader h=*(LowHeader *)block;
+    if (h.magic!=LOW_MAGIC || h.kind>LOW_HOST) { fprintf(stderr,"STOP: runtime_low_free(%p): not a low block\n",pointer); exit(21); }
+    ((LowHeader *)block)->magic=0;
+    if (h.kind==LOW_HOST) {
+#ifdef _WIN32
+        _aligned_free(block);
+#else
+        free(block);
+#endif
+        return;
+    }
+    if (h.kind==LOW_LARGE) return;
+    pthread_mutex_lock(&low_lock);
+    LowFree *f=(LowFree *)block; f->next=low_free[h.kind]; low_free[h.kind]=f;
+    pthread_mutex_unlock(&low_lock);
 }
 /* ---- GPU library interface (gpu/shim/bbgpu.cpp) ---- */
 /* Optimizations switched off at run time (diagnostics): the number in the file named by

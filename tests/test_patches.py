@@ -1,4 +1,7 @@
 from paths import ROOT
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import os
 import struct
 import tempfile
 import unittest
@@ -12,7 +15,11 @@ from patches import (EBOOT_BASE, FIXES, FPS_PRESETS, OUTPUT_SIZE, RESOLUTION_TEM
                      validate_patch_requirements, external_patches, external_selection,
                      compile_external, frame_rate_fixes, sprint_fix_enabled, eboot_bytes,
                      eboot_matches_patches, patch_fingerprint, patch_sites, game_app_version,
-                     eboot_is_109)
+                     eboot_is_109, SCALED_BASE, SCALED_FPS, SCALED_VALUES, fps_preset, rate_scaled,
+                     eboot_segments, rate_corrections, camera_value, EFFECT_RATE_SITES,
+                     CLOTH_STIFFNESS, CLOTH_LEFT_OUT, CAMERA_FIELDS, frame_steps, preset_writes, with_external,
+                     HEAP_PATCH, HEAP_GUARD, pc_heaps_enabled, site_matches,
+                     HASH_GUARDS, guarded_patches)
 
 XML = ROOT / 'patches/Bloodborne.xml'
 SEGMENTS = [(0, 0x6000000)]
@@ -110,8 +117,8 @@ class NativeUiTests(unittest.TestCase):
 
 class FpsPatchTests(unittest.TestCase):
     def test_fps_physics_write_preserves_unrelated_instruction(self):
-        for preset, value in [('60 FPS++', '8988083D'), ('90 FPS++', '610B363C'),
-                              ('Uncap FPS++', '8988083C')]:
+        # 60 FPS++ keeps the game's own 1/30 step: the file has no write for it there.
+        for preset, value in [('90 FPS++', '610B363C'), ('Uncap FPS++', '8988083C')]:
             with self.subTest(preset=preset):
                 writes = compile_patches(XML, [preset], '01.09', SEGMENTS)
                 self.assertIn((0x00f383ca - EBOOT_BASE, bytes.fromhex(value)), writes)
@@ -120,23 +127,281 @@ class FpsPatchTests(unittest.TestCase):
     def test_fps_presets_set_the_physics_step_per_frame_rate(self):
         # shadPS4's maintained patch values (upstream be1cde3): 1/30 at 60 FPS (the game's own),
         # 1/90 at 90 FPS, 1/120 uncapped. The old values were 1/15, 1/30 and 1/240.
-        for preset, step in [('60 FPS++', 30), ('90 FPS++', 90), ('Uncap FPS++', 120)]:
+        for preset, step in [('90 FPS++', 90), ('Uncap FPS++', 120)]:
             with self.subTest(preset=preset):
                 writes = dict(compile_patches(XML, [preset], '01.09', SEGMENTS))
                 value = struct.unpack('<f', writes[0x00f383ca - EBOOT_BASE])[0]
                 self.assertAlmostEqual(1 / value, step, places=2)
+        # 60 FPS++ leaves the game's 1/30 in place (patches/Bloodborne.xml keeps no game bytes).
+        self.assertNotIn(0x00f383ca - EBOOT_BASE, dict(compile_patches(XML, ['60 FPS++'], '01.09', SEGMENTS)))
 
     def test_other_versions_keep_their_xml_addresses(self):
         tree = ET.parse(XML)
         for meta in tree.getroot().iter('Metadata'):
-            if meta.get('Name') == '60 FPS++' and meta.get('AppVer') == '01.09':
+            if meta.get('Name') == '90 FPS++' and meta.get('AppVer') == '01.09':
                 meta.set('AppVer', '01.08')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'patch.xml'
             tree.write(path)
-            writes = compile_patches(path, ['60 FPS++'], '01.08', SEGMENTS)
+            writes = compile_patches(path, ['90 FPS++'], '01.08', SEGMENTS)
             self.assertIn(0x011383ca - EBOOT_BASE, [at for at, data in writes])
             self.assertNotIn(0x00f383ca - EBOOT_BASE, [at for at, data in writes])
+
+
+# A prepared 1.09 eboot.elf (prepare.py's out/eboot.elf, or BB_TEST_EBOOT_ELF): the tests that
+# check sites against the game's own code skip without one.
+GAME_ELF = Path(os.environ.get('BB_TEST_EBOOT_ELF') or ROOT / 'out/eboot.elf')
+
+
+class ScaledFpsTests(unittest.TestCase):
+    """120 and 144: 90 FPS++ (rate base) with its frame-rate values for the rate."""
+    def base(self):
+        return compile_patches(XML, [SCALED_BASE], '01.09', SEGMENTS)
+
+    def test_presets_use_the_base(self):
+        self.assertEqual(SCALED_FPS, {'120': 120, '144': 144})
+        names = [m.get('Name') for m in ET.parse(XML).getroot().iter('Metadata')]
+        self.assertEqual(names.count(SCALED_BASE), 1)
+
+    def test_90_is_the_list_as_it_is(self):
+        self.assertEqual(rate_scaled(self.base(), 90), self.base())
+
+    def test_120_and_144_values(self):
+        base = dict(self.base())
+        for fps in (120, 144):
+            with self.subTest(fps=fps):
+                writes = rate_scaled(self.base(), fps)
+                self.assertEqual(len(writes), len(base))
+                scaled = dict(writes)
+                f = lambda address, at=0: struct.unpack_from('<f', scaled[address - EBOOT_BASE], at)[0]
+                self.assertAlmostEqual(f(0x0F383CA), 1 / fps, places=7)          # physics step
+                self.assertAlmostEqual(f(0x1CBDB42, 6), 1.125 / fps, places=7)   # stamina
+                self.assertAlmostEqual(f(0x4D29170), 1 / fps, places=7)
+                self.assertEqual([f(0x4CF6420, i) for i in (0, 4, 8, 12)], [f(0x4CF6420)] * 4)
+                self.assertAlmostEqual(f(0x4CF6420), 3 / fps, places=7)
+                self.assertAlmostEqual(f(0x4D27FD4), -3 / fps, places=7)
+                limiter = scaled[0x2C012CC - EBOOT_BASE]
+                self.assertEqual(struct.unpack_from('<I', limiter, 2)[0], {120: 8000, 144: 6500}[fps])
+                self.assertEqual(struct.unpack_from('<I', limiter, 9)[0], {120: 8000, 144: 6500}[fps])
+                self.assertEqual(struct.unpack('<i', scaled[0x1929676 - EBOOT_BASE])[0], fps // 6)
+                self.assertEqual(struct.unpack('<i', scaled[0x192C405 - EBOOT_BASE])[0], fps // 3)
+                self.assertEqual(struct.unpack_from('<I', scaled[0x25629F0 - EBOOT_BASE], 1)[0], 990000 // fps)
+                # Everything else is the 90 FPS++ list's own bytes.
+                changed = {a for a in base if base[a] != scaled[a]}
+                self.assertLessEqual({a + EBOOT_BASE for a in changed}, set(SCALED_VALUES))
+                for a in changed:  # only the value fields, never the instructions around them
+                    fields = SCALED_VALUES[a + EBOOT_BASE]
+                    for i, (old, new) in enumerate(zip(base[a], scaled[a])):
+                        if old != new:
+                            self.assertTrue(any(at <= i < at + struct.calcsize(fmt) for at, fmt, _ in fields))
+
+    def test_another_list_under_the_name_is_refused(self):
+        for change in ('value', 'missing'):
+            with self.subTest(change=change):
+                writes = self.base()
+                at = [i for i, (o, _) in enumerate(writes) if o == 0x0F383CA - EBOOT_BASE][0]
+                if change == 'value':
+                    writes[at] = (writes[at][0], struct.pack('<f', 1 / 60))
+                else:
+                    del writes[at]
+                with self.assertRaises(ValueError):
+                    rate_scaled(writes, 120)
+
+    def test_other_code_gets_no_scaled_preset(self):
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(fps_preset('120', fake_elf(0x400000, bytes(64)), XML, '01.09'), [])
+        self.assertEqual(fps_preset('90', b'', XML, '01.09'), ['90 FPS++'])
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_game_matches_and_the_base_keeps_no_game_bytes(self):
+        elf = GAME_ELF.read_bytes()
+        self.assertEqual(fps_preset('144', elf, XML, '01.09'), [SCALED_BASE])
+        for offset, data in compile_patches(XML, [SCALED_BASE], '01.09', eboot_segments(elf)):
+            self.assertNotEqual(eboot_bytes(elf, offset, offset + len(data)), data, hex(offset + EBOOT_BASE))
+
+
+class RateCorrectionTests(unittest.TestCase):
+    """High-FPS corrections (Awakenchan/BloodBorneButPc): effect rate, cloth, camera."""
+    def corrected(self, fps, settings=None, env=None):
+        writes = rate_scaled(compile_patches(XML, [SCALED_BASE], '01.09', SEGMENTS), fps)
+        with mock.patch.dict('os.environ', env or {}, clear=True), redirect_stdout(io.StringIO()):
+            return writes, rate_corrections(writes, fps, None, settings or {})
+
+    def test_effects_keep_the_games_rate(self):
+        writes, out = self.corrected(120)
+        sites = {a - EBOOT_BASE for a in EFFECT_RATE_SITES}
+        self.assertTrue(sites <= dict(writes).keys())
+        self.assertFalse(sites & dict(out).keys())
+        _, out = self.corrected(120, env={'BB_EFFECT_RATE_FIX': '0'})
+        self.assertTrue(sites <= dict(out).keys())
+        _, out = self.corrected(120, settings={'effect_rate_fix': '0'})
+        self.assertTrue(sites <= dict(out).keys())
+
+    def test_cloth_stiffness_and_the_1_0_sites_above_60(self):
+        for fps in (120, 144):
+            with self.subTest(fps=fps):
+                writes, out = self.corrected(fps)
+                out = dict(out)
+                self.assertEqual(struct.unpack('<4f', out[CLOTH_STIFFNESS - EBOOT_BASE]),
+                                 (struct.unpack('<f', struct.pack('<f', (60 / fps) ** 2))[0],) * 4)
+                left = [o for o, _ in writes if any(lo <= o + EBOOT_BASE < hi for lo, hi in CLOTH_LEFT_OUT)]
+                self.assertTrue(left)
+                self.assertFalse(set(left) & out.keys())
+        writes, out = self.corrected(144, env={'BB_CLOTH_FIX': '0'})
+        self.assertEqual(dict(out)[CLOTH_STIFFNESS - EBOOT_BASE], dict(writes)[CLOTH_STIFFNESS - EBOOT_BASE])
+
+    def test_camera_only_when_asked(self):
+        writes, out = self.corrected(144)
+        cams = {a - EBOOT_BASE for a in CAMERA_FIELDS}
+        self.assertEqual({o: d for o, d in out if o in cams}, {o: d for o, d in writes if o in cams})
+        _, on = self.corrected(144, env={'BB_CAMERA_FIX': '1'})
+        on, base = dict(on), dict(writes)
+        changed = [o for o in cams if on[o] != base[o]]
+        self.assertTrue(changed)
+        for o in changed:
+            w = struct.unpack('<f', base[o])[0]
+            expected = camera_value(CAMERA_FIELDS[o + EBOOT_BASE], w, 60 / 144)
+            self.assertAlmostEqual(struct.unpack('<f', on[o])[0], expected, places=6)
+        self.assertAlmostEqual(camera_value(0x19c, 0.05, 1), 0.05)
+        self.assertAlmostEqual(camera_value(0x19c, 0.5, 0.5), 1 - 0.5 ** 0.5)
+        self.assertAlmostEqual(camera_value(0x1a8, 0.5, 0.5), 0.5 ** 0.5)
+        self.assertEqual(camera_value(0x238, 0.5, 0.5), 0.5)
+
+    def test_existing_presets_are_unchanged_by_default(self):
+        for preset, fps in (('60 FPS++', 60), ('90 FPS++', 90), ('Uncap FPS++', None)):
+            with self.subTest(preset=preset):
+                writes = compile_patches(XML, [preset], '01.09', SEGMENTS)
+                with mock.patch.dict('os.environ', {}, clear=True), redirect_stdout(io.StringIO()):
+                    self.assertEqual(rate_corrections(writes, fps, None, {}), writes)
+
+
+class FrameStepTests(unittest.TestCase):
+    """The lists' fixed 1/60 steps follow the rate above 60 FPS (BB_FRAME_STEP_FIX)."""
+    def setUp(self):
+        code = bytearray(0x40)
+        struct.pack_into('<f', code, 0x10, 1 / 30)   # a game step
+        struct.pack_into('<f', code, 0x20, 0.25)     # something else
+        self.elf = fake_elf(0, bytes(code))
+        self.writes = [(0x10, struct.pack('<f', 1 / 60)), (0x20, struct.pack('<f', 1 / 60)),
+                       (0x30, b'\x90' * 4)]
+
+    def steps(self, fps, env=None, settings=None):
+        with mock.patch.dict('os.environ', env or {}, clear=True), redirect_stdout(io.StringIO()):
+            return frame_steps(self.writes, fps, self.elf, settings or {})
+
+    def test_only_steps_the_game_has_at_1_30(self):
+        for fps in (90, 120, 144):
+            with self.subTest(fps=fps):
+                out = self.steps(fps)
+                self.assertEqual(out[0], (0x10, struct.pack('<f', 1 / fps)))
+                self.assertEqual(out[1:], self.writes[1:])
+
+    def test_60_uncapped_and_off_keep_the_list(self):
+        self.assertEqual(self.steps(60), self.writes)
+        self.assertEqual(self.steps(None), self.writes)
+        self.assertEqual(self.steps(120, env={'BB_FRAME_STEP_FIX': '0'}), self.writes)
+        self.assertEqual(self.steps(120, settings={'frame_step_fix': '0'}), self.writes)
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_sites_in_the_game(self):
+        elf = GAME_ELF.read_bytes()
+        segments = eboot_segments(elf)
+        for preset, fps, count in (('90 FPS++', '90', 95), (SCALED_BASE, '120', 78)):
+            with self.subTest(preset=preset), mock.patch.dict('os.environ', {}, clear=True), \
+                    redirect_stdout(io.StringIO()):
+                before = rate_scaled(compile_patches(XML, [preset], '01.09', segments), int(fps)) \
+                    if preset == SCALED_BASE else compile_patches(XML, [preset], '01.09', segments)
+                after = preset_writes(XML, [preset], fps, '01.09', segments, elf, {})
+                stepped = [o for (o, d) in after if d == struct.pack('<f', 1 / int(fps))
+                           and eboot_bytes(elf, o, o + 4) == struct.pack('<f', 1 / 30)
+                           and dict(before)[o] == struct.pack('<f', 1 / 60)]
+                self.assertEqual(len(stepped), count)
+
+
+class ExternalFpsPatchTests(unittest.TestCase):
+    EXTERNAL = """<?xml version="1.0"?>
+<Patch><TitleID><ID>CUSA03173</ID></TitleID>
+<Metadata Title="Bloodborne" Name="{name}" AppVer="01.09" AppElf="eboot.bin" isEnabled="true"><PatchList>
+<Line Type="bytes" Address="{address}" Value="8988883C"/>
+</PatchList></Metadata></Patch>"""
+
+    def folder(self, files):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name, text in files.items():
+            (Path(directory.name) / name).write_text(text)
+        return Path(directory.name)
+
+    def test_copies_of_the_built_in_file_are_ignored(self):
+        folder = self.folder({'bloodborne.XML': XML.read_text(encoding='utf-8'),
+                              'other.xml': self.EXTERNAL.format(name='Mine', address='0x00500000')})
+        with mock.patch.dict('os.environ', {}, clear=True), redirect_stderr(io.StringIO()) as log:
+            self.assertEqual([key for key, _, _ in external_patches(folder)], ['other.xml/Mine'])
+        self.assertIn('ignored', log.getvalue())
+        with mock.patch.dict('os.environ', {'BB_EXTERNAL_BLOODBORNE_XML': '1'}, clear=True):
+            self.assertIn('bloodborne.XML/Uncap FPS++', [key for key, _, _ in external_patches(folder)])
+        ini = folder / 'bbport.ini'
+        ini.write_text('external_bloodborne_xml=1\n')
+        with mock.patch.dict('os.environ', {'BB_CONFIG': str(ini)}, clear=True):
+            self.assertIn('bloodborne.XML/Uncap FPS++', [key for key, _, _ in external_patches(folder)])
+
+    def test_an_external_fps_patch_replaces_the_preset(self):
+        preset = compile_patches(XML, ['60 FPS++'], '01.09', SEGMENTS)
+        others = [(0x500000, b'\x01')]
+        # A site the preset writes (its physics step stays the game's own 1/30 at 60 FPS, so that
+        # line is not in the list since the redistribution review).
+        written = f'0x{preset[0][0] + EBOOT_BASE:08X}'
+        for address, replaces in ((written, True), ('0x00500010', False)):
+            with self.subTest(address=address):
+                folder = self.folder({'fps.xml': self.EXTERNAL.format(name='60FPS (no deltatime)', address=address)})
+                with mock.patch.dict('os.environ', {}, clear=True), redirect_stdout(io.StringIO()):
+                    selected = external_selection(external_patches(folder), None)
+                    writes, replaced = with_external(preset + others, len(preset), selected, SEGMENTS)
+                external = [(int(address, 16) - EBOOT_BASE, bytes.fromhex('8988883C'))]
+                if replaces:
+                    self.assertEqual(replaced, 'fps.xml/60FPS (no deltatime)')
+                    self.assertEqual(writes, others + external)
+                else:
+                    self.assertIsNone(replaced)
+                    self.assertEqual(writes, preset + others + external)
+
+
+class PcHeapTests(unittest.TestCase):
+    def test_switch(self):
+        with mock.patch.dict('os.environ', {}, clear=True):
+            self.assertTrue(pc_heaps_enabled({}))
+            self.assertFalse(pc_heaps_enabled({'pc_heaps': '0'}))
+        with mock.patch.dict('os.environ', {'BB_PC_HEAPS': '0'}):
+            self.assertFalse(pc_heaps_enabled({'pc_heaps': '1'}))
+
+    def test_guard_covers_both_writes(self):
+        offset, length, _ = HEAP_GUARD
+        writes = compile_patches(XML, [HEAP_PATCH], '01.09', SEGMENTS)
+        self.assertEqual(len(writes), 2)
+        for at, data in writes:
+            self.assertTrue(offset <= at and at + len(data) <= offset + length)
+        self.assertFalse(site_matches(fake_elf(offset, bytes(length)), HEAP_GUARD))
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_guard_matches_the_game(self):
+        self.assertTrue(site_matches(GAME_ELF.read_bytes(), HEAP_GUARD))
+
+
+class CircleConfirmTests(unittest.TestCase):
+    NAME = 'Circle Confirm (Japanese/Asian button layout)'
+
+    def test_switch_and_guard(self):
+        self.assertIn(self.NAME, effect_patches({'tweak_circle_confirm': '1'}))
+        self.assertNotIn(self.NAME, effect_patches({'tweak_circle_confirm': '0'}))
+        offset, length, _ = HASH_GUARDS[self.NAME]
+        (at, data), = compile_patches(XML, [self.NAME], '01.09', SEGMENTS)
+        self.assertEqual((at, len(data)), (offset, length))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(guarded_patches([self.NAME], fake_elf(0, bytes(0x2000000))), [])
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_guard_matches_the_game(self):
+        self.assertEqual(guarded_patches([self.NAME], GAME_ELF.read_bytes()), [self.NAME])
 
 
 def fake_elf(vaddr, code):
@@ -150,8 +415,15 @@ def fake_elf(vaddr, code):
 
 class SprintFixTests(unittest.TestCase):
     def test_blocked_movement_check_divides_by_frame_time(self):
-        elf = fake_elf(0x1514c24, bytes.fromhex('c5fa590500174103'))
-        self.assertEqual(frame_rate_fixes(elf), [(0x1514c24, bytes.fromhex('c5fa5e458c0f1f00'))])
+        # The fix knows the game's vmulss only by length and hash (no game bytes here): stand-in
+        # bytes with a matching check exercise the same path.
+        import patches
+        from cpu_compat import site_check
+        stand_in = bytes(range(8))
+        fixes = [(vaddr, (8, site_check(stand_in)), new) for vaddr, _, new in patches.FRAME_RATE_FIXES]
+        with mock.patch.object(patches, 'FRAME_RATE_FIXES', fixes):
+            elf = fake_elf(0x1514c24, stand_in)
+            self.assertEqual(frame_rate_fixes(elf), [(0x1514c24, bytes.fromhex('c5fa5e458c0f1f00'))])
 
     def test_unexpected_code_is_left_alone(self):
         elf = fake_elf(0x1514c24, bytes.fromhex('9090909090909090'))

@@ -4,8 +4,9 @@
  * (https://github.com/droogie/bbhost, GPL-3.0-or-later).
  *
  * Addresses are image offsets: Binary Ninja / PS4 virtual address minus 0x400000 (patches.py).
- * Every hook first checks the original bytes and refuses, leaving the image unchanged, when
- * they differ - another layout, another game version or a patch already there.
+ * Every hook first checks the original code (its length and hash, code_check.h; the port keeps
+ * no game bytes) and refuses, leaving the image unchanged, when it differs - another layout,
+ * another game version or a patch already there.
  *
  * Host functions run on the game's own threads with the game's calling convention, so they
  * are declared BB_GUEST_ABI (System V). */
@@ -24,6 +25,8 @@ extern "C" {
 /* Image offset of a Binary Ninja address (eboot at its preferred 0x400000 base). */
 #define BB_BN(address) ((uint64_t)(address) - 0x400000u)
 
+#include "code_check.h"
+
 /* Reserves the stub area within reach of rel32 jumps from the image. The image must still be
  * writable. Returns 0 on success. */
 int bb_hooks_init(unsigned char *image, size_t size);
@@ -38,9 +41,9 @@ void *bb_guest(uint64_t offset);
 int bb_hook_call(uint64_t at, uint64_t target, void *host);
 
 /* Runs `host` with the function's arguments (integer and vector registers preserved) each time
- * the function at `at` is entered, then the function itself. `prologue` is the first `n` (>= 5)
- * bytes expected there; they must not be RIP-relative, since they run from the stub. */
-int bb_hook_entry(uint64_t at, const unsigned char *prologue, size_t n, void *host);
+ * the function at `at` is entered, then the function itself. `prologue` describes the first
+ * (>= 5) bytes expected there; they must not be RIP-relative, since they run from the stub. */
+int bb_hook_entry(uint64_t at, BbCode prologue, void *host);
 
 /* Writes `n` bytes at `at` when they are exactly `expected` (data or code). Returns 0, or -1
  * with nothing changed. */
@@ -51,17 +54,17 @@ typedef struct {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rbx, rdx, rcx, rax, flags;
 } BbRegs;
 
-/* Runs `host` in the middle of a function, just before the `n` (>= 5) bytes at `at`, which must
- * be exactly `original`: whole instructions that are not RIP-relative, not branches, and that
+/* Runs `host` in the middle of a function, just before the (>= 5) bytes at `at`, which must
+ * be the code `original` describes: whole instructions that are not RIP-relative, not branches, and that
  * no branch lands inside after the first. Every register, the flags and the vector registers
  * (ymm0-15) are kept; the red zone below the game's stack pointer is left alone. */
-int bb_hook_mid(uint64_t at, const unsigned char *original, size_t n, void (BB_GUEST_ABI *host)(BbRegs *));
+int bb_hook_mid(uint64_t at, BbCode original, void (BB_GUEST_ABI *host)(BbRegs *));
 
-/* Makes the `n` (>= 5) bytes at `at` (exactly `original`, under the same rules) skippable while
+/* Makes the (>= 5) bytes at `at` (the code `original` describes, under the same rules) skippable while
  * the game runs: bb_skip(handle, 1) jumps over them, bb_skip(handle, 0) runs them again. The
  * switch is one pointer-sized store, so it is safe from any thread. NULL when refused. */
 typedef struct BbSkip BbSkip;
-BbSkip *bb_hook_skip(uint64_t at, const unsigned char *original, size_t n);
+BbSkip *bb_hook_skip(uint64_t at, BbCode original);
 void bb_skip(BbSkip *site, int skip);
 
 /* Copies `n` bytes of the game's memory at a guest address without faulting on an unmapped one

@@ -17,6 +17,11 @@ typedef double (BB_GUEST_ABI *VecFn)(double, double);
 enum { SUM = 0x100, ADD = 0x200, CALLER = 0x300, MID = 0x400, MID_SITE = MID + 16, STEP = 0x500,
        IMAGE = 0x2000 };
 /* sum(a, b) = a + 2b: push rbp; mov rbp,rsp; lea rax,[rdi+rsi*2]; pop rbp; ret */
+/* The hook API checks sites by length and hash (code_check.h). */
+static BbCode code_of(const unsigned char *code, size_t n) {
+    BbCode c = {n, bb_code_hash(code, n)};
+    return c;
+}
 static const unsigned char sum_code[] = {0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x04, 0x77, 0x5d, 0xc3};
 /* add(x, y) = x + y: addsd xmm0,xmm1; ret (the whole function is the displaced prologue) */
 static const unsigned char add_code[] = {0xf2, 0x0f, 0x58, 0xc1, 0xc3};
@@ -86,11 +91,11 @@ int main(void) {
     unsigned char before[IMAGE];
     memcpy(before, image, IMAGE);
     const unsigned char wrong[] = {0x55, 0x48, 0x89, 0xe5, 0x90};
-    assert(bb_hook_entry(SUM, wrong, sizeof(wrong), (void *)on_sum) == -1);
+    assert(bb_hook_entry(SUM, code_of(wrong, sizeof(wrong)), (void *)on_sum) == -1);
     assert(bb_hook_call(CALLER, ADD, (void *)replace_sum) == -1);
     assert(bb_hook_call(SUM, SUM, (void *)replace_sum) == -1);
-    assert(bb_hook_mid(MID_SITE, step_code, 5, on_mid) == -1);
-    assert(bb_hook_skip(STEP, step_code + 5, 5) == NULL);
+    assert(bb_hook_mid(MID_SITE, code_of(step_code, 5), on_mid) == -1);
+    assert(bb_hook_skip(STEP, code_of(step_code + 5, 5)) == NULL);
     assert(!memcmp(before, image, IMAGE));  /* refusals change nothing */
 
     /* A guarded data write: only over the expected bytes, nothing changed otherwise. */
@@ -100,12 +105,12 @@ int main(void) {
     assert(bb_patch(0x1800, pad, data, 4) == 0 && !memcmp(image + 0x1800, data, 4));
     assert(bb_patch(0x1800, pad, data, 4) == -1);  /* already written */
 
-    assert(bb_hook_entry(SUM, sum_code, 8, (void *)on_sum) == 0);
-    assert(bb_hook_entry(ADD, add_code, sizeof(add_code), (void *)on_add) == 0);
+    assert(bb_hook_entry(SUM, code_of(sum_code, 8), (void *)on_sum) == 0);
+    assert(bb_hook_entry(ADD, code_of(add_code, sizeof(add_code)), (void *)on_add) == 0);
     assert(bb_hook_call(CALLER, SUM, (void *)replace_sum) == 0);
-    assert(bb_hook_entry(SUM, sum_code, 8, (void *)on_sum) == -1);  /* already hooked */
-    assert(bb_hook_mid(MID_SITE, mid_code + 16, 5, on_mid) == 0);
-    BbSkip *add16 = bb_hook_skip(STEP + 5, step_code + 5, 5);
+    assert(bb_hook_entry(SUM, code_of(sum_code, 8), (void *)on_sum) == -1);  /* already hooked */
+    assert(bb_hook_mid(MID_SITE, code_of(mid_code + 16, 5), on_mid) == 0);
+    BbSkip *add16 = bb_hook_skip(STEP + 5, code_of(step_code + 5, 5));
     assert(add16);
     bb_hooks_seal();
     DWORD old;

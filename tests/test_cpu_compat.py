@@ -2,6 +2,8 @@
 
 BB_CPU_TEST_ROOT selects a reviewed checkout without copying game data.
 BB_CPU_DEPS_DIR explicitly selects optional Capstone/Keystone test packages.
+BB_CPU_GAME_DIR names a 1.09 game folder: the allocator span tests read their function
+bytes from its eboot.bin (the repository holds no game bytes) and skip without it.
 Native cases execute only audited translated baseline bodies, never BMI input.
 """
 import copy
@@ -28,7 +30,7 @@ import cpu_compat
 from cpu_harness import (NativeHarness, REGISTERS, MASK64, reference, register_name,
                          audit_baseline, movbe_reference, ARITHMETIC_FLAGS)
 from allocator_fixture import (SOURCE_SHA256, FUNCTION_SHA256, FUNCTION_START,
-                               FUNCTION_END, FUNCTION_BYTES, SPANS,
+                               FUNCTION_END, SPANS, span_bytes,
                                expected_state, subtract32)
 
 try:
@@ -48,9 +50,10 @@ def fixture():
     image[32:37] = original
     digest = 'a' * 64
     return dict(image=image, segments=[(0, 4096, 5)], main={'sha256': digest},
-                modules=[], relocations=[], plan={'version': 1, 'modules': {'eboot.bin': digest},
-                'sites': [{'module': 'eboot.bin', 'address': 32, 'bytes': original.hex(),
-                           'body': '90', 'instruction': 'blsr rax, rax'}], 'unhandled': []}, active=True)
+                modules=[], relocations=[], plan={'version': 4, 'modules': {'eboot.bin': digest},
+                'sites': [{'module': 'eboot.bin', 'address': 32, 'length': 5,
+                           'check': cpu_compat.site_check(original),
+                           'body': '90', 'mnemonic': 'blsr'}], 'unhandled': []}, active=True)
 
 
 class ApplyImageTests(unittest.TestCase):
@@ -96,17 +99,23 @@ class ApplyImageTests(unittest.TestCase):
             lambda d: d['main'].update(sha256='b' * 64),
             lambda d: d['image'].__setitem__(32, 0),
             lambda d: d['plan'].update(version=999),
+            lambda d: d['plan'].update(version=3),
             lambda d: d['plan'].update(version=True),
             lambda d: d['plan'].pop('unhandled'),
             lambda d: d['plan']['sites'][0].update(address=-1),
             lambda d: d['plan']['sites'][0].update(address=4094),
             lambda d: d['plan']['sites'][0].update(address=True),
-            lambda d: d['plan']['sites'][0].update(bytes='90909090'),
-            lambda d: d['plan']['sites'][0].update(bytes='xx' * 5),
+            lambda d: d['plan']['sites'][0].update(length=4),
+            lambda d: d['plan']['sites'][0].update(length=6),
+            lambda d: d['plan']['sites'][0].update(length=True),
+            lambda d: d['plan']['sites'][0].update(check='0' * 16),
+            lambda d: d['plan']['sites'][0].update(check='xx' * 8),
+            lambda d: d['plan']['sites'][0].pop('check'),
             lambda d: d['plan']['sites'][0].update(body=''),
             lambda d: d['plan']['sites'][0].update(body='90' * 4097),
             lambda d: d['plan']['sites'][0].update(module='missing.prx'),
-            lambda d: d['plan']['sites'][0].update(instruction='unsupported rax'),
+            lambda d: d['plan']['sites'][0].update(mnemonic='unsupported'),
+            lambda d: d['plan']['sites'][0].update(mnemonic='blsr rax, rax'),
             lambda d: d['plan']['sites'].append(copy.deepcopy(d['plan']['sites'][0])),
             lambda d: d.update(segments=[(0, 4096, 4)]),
             lambda d: d.update(segments=[(0, 4097, 5)]),
@@ -129,7 +138,6 @@ class ApplyImageTests(unittest.TestCase):
 
     def test_module_base_and_rip_fixup(self):
         data = fixture()
-        data['plan']['version'] = 2
         site = data['plan']['sites'][0]
         site.update(body='488b0500000000', rip_fixups=[{'offset': 3, 'next_offset': 7, 'target': 100}])
         result, _, _ = cpu_compat.patch_image(**data)
@@ -139,9 +147,6 @@ class ApplyImageTests(unittest.TestCase):
             invalid = copy.deepcopy(data)
             invalid['plan']['sites'][0]['rip_fixups'][0].update(defect)
             self.reject(invalid)
-        invalid = copy.deepcopy(data)
-        invalid['plan']['version'] = 1
-        self.reject(invalid)
         invalid = copy.deepcopy(data)
         invalid['plan']['sites'][0]['rip_fixups'] *= 2
         self.reject(invalid)
@@ -178,7 +183,7 @@ class ApplyImageTests(unittest.TestCase):
         for mnemonic in ('lzcnt', 'tzcnt'):
             data = fixture()
             data['plan']['unhandled'] = [{'module': 'eboot.bin', 'address': '0x64',
-                                         'instruction': mnemonic + ' eax, eax',
+                                         'mnemonic': mnemonic,
                                          'reason': 'Too short for guarded jump'}]
             with self.subTest(instruction=mnemonic):
                 with patch.dict(os.environ, {'BB_LEGACY_CPU_ALLOW_PARTIAL': '0'}):
@@ -243,12 +248,28 @@ class TranslatedBodyTests(unittest.TestCase):
         if not path.exists():
             self.skipTest('Persisted plan absent from the selected test checkout')
         plan = json.loads(path.read_text(encoding='utf-8'))
+        # The plan has no operands: with a game folder, decode them from its modules.
+        game = os.environ.get('BB_CPU_GAME_DIR')
+        modules = {}
+        if game:
+            for name, relative in (('eboot.bin', 'eboot.bin'), ('libc.prx', 'sce_module/libc.prx'),
+                                   ('libSceFios2.prx', 'sce_module/libSceFios2.prx')):
+                modules[name] = self.builder.module(Path(game) / relative)
+        decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
         for site in plan['sites']:
-            mnemonic, operands = site['instruction'].split(' ', 1)
             body = bytes.fromhex(site['body'])
             with self.subTest(module=site['module'], address=site['address']):
-                self.assertEqual(body, self.builder.body(mnemonic, operands))
+                self.assertNotIn('bytes', site)
                 audit_baseline(body, capstone)
+                mod = modules.get(site['module'])
+                if mod is None or site.get('kind') == 'count_span':
+                    continue
+                at = self.builder.file_offset(mod, site['address'], site['length'], True)
+                original = bytes(mod['elf'][at:at + site['length']])
+                self.assertEqual(cpu_compat.site_check(original), site['check'])
+                _, length, mnemonic, operands = next(decoder.disasm_lite(original, site['address']))
+                self.assertEqual((length, mnemonic), (site['length'], site['mnemonic']))
+                self.assertEqual(body, self.builder.body(mnemonic, operands))
 
     def test_every_gpr_width_alias_and_arithmetic_edges(self):
         names = REGISTERS[:-1]
@@ -442,9 +463,8 @@ class TranslatedBodyTests(unittest.TestCase):
                 self.assertEqual(fixups[0]['target'], 32 + len(original) + 64)
                 data = fixture()
                 data['image'][32:32 + len(original)] = original
-                data['plan']['version'] = 2
-                data['plan']['sites'][0].update(bytes=original.hex(), body=body.hex(),
-                    instruction=instruction_text, rip_fixups=fixups)
+                data['plan']['sites'][0].update(length=len(original), check=cpu_compat.site_check(original),
+                    body=body.hex(), mnemonic='movbe', rip_fixups=fixups)
                 translated = cpu_compat.patch_image(**data)[0]
                 target = 37 + struct.unpack_from('<i', translated, 33)[0]
                 fixup = fixups[0]
@@ -473,6 +493,7 @@ class TranslatedBodyTests(unittest.TestCase):
 
 
 @unittest.skipIf(DEPENDENCY_ERROR or os.name != 'nt', DEPENDENCY_ERROR or 'Windows x64 only')
+@unittest.skipUnless(os.environ.get('BB_CPU_GAME_DIR'), 'BB_CPU_GAME_DIR (a 1.09 game folder) not set')
 class AllocatorSpanTests(unittest.TestCase):
     """D015 public application and full-state oracle; no original count executes."""
 
@@ -483,12 +504,15 @@ class AllocatorSpanTests(unittest.TestCase):
         spec.loader.exec_module(cls.builder)
         plan = json.loads((ROOT / 'tools/legacy-cpu-plan.json').read_text(encoding='utf-8'))
         cls.sites = [copy.deepcopy(s) for s in plan['sites'] if s.get('kind') == 'count_span']
-        if plan['version'] != 3 or {s['address'] for s in cls.sites} != {s[0] for s in SPANS}:
-            raise AssertionError('Selected CPU subject must contain exactly the four D015 v3 spans')
-        if len(FUNCTION_BYTES) != 393 or hashlib.sha256(FUNCTION_BYTES).hexdigest() != FUNCTION_SHA256:
-            raise AssertionError('Independent allocator context fixture was corrupted')
+        if plan['version'] != 4 or {s['address'] for s in cls.sites} != {s[0] for s in SPANS}:
+            raise AssertionError('Selected CPU subject must contain exactly the four D015 v4 spans')
+        mod = cls.builder.module(Path(os.environ['BB_CPU_GAME_DIR']) / 'eboot.bin')
+        at = cls.builder.file_offset(mod, FUNCTION_START, FUNCTION_END - FUNCTION_START, True)
+        cls.function = bytes(mod['elf'][at:at + FUNCTION_END - FUNCTION_START])
+        if mod['sha256'] != SOURCE_SHA256 or hashlib.sha256(cls.function).hexdigest() != FUNCTION_SHA256:
+            raise AssertionError('BB_CPU_GAME_DIR is not the inspected 1.09 eboot.bin')
         cls.base_image = bytearray((FUNCTION_END + 4095) & ~4095)
-        cls.base_image[FUNCTION_START:FUNCTION_END] = FUNCTION_BYTES
+        cls.base_image[FUNCTION_START:FUNCTION_END] = cls.function
         cls.base_hash = hashlib.sha256(cls.base_image).hexdigest()
         cls.random = random.Random(0xd0153770)
         cls.executions = 0
@@ -502,7 +526,7 @@ class AllocatorSpanTests(unittest.TestCase):
     def fixture(cls):
         return dict(image=cls.base_image, segments=[(0, len(cls.base_image), 5)],
                     main={'sha256': SOURCE_SHA256}, modules=[], relocations=[], active=True,
-                    plan={'version': 3, 'modules': {'eboot.bin': SOURCE_SHA256},
+                    plan={'version': 4, 'modules': {'eboot.bin': SOURCE_SHA256},
                           'sites': copy.deepcopy(cls.sites), 'unhandled': []})
 
     def reject(self, data, *, override='1'):
@@ -547,8 +571,11 @@ class AllocatorSpanTests(unittest.TestCase):
         values.update(self.random.getrandbits(32) for _ in range(64))
         return sorted(values)
 
+    def parts(self, span):
+        return span_bytes(self.function, span)
+
     def assert_transfer(self, image, span, report):
-        start, original = span[0], bytes.fromhex(span[7])
+        start, (original, tail, _) = span[0], self.parts(span)
         end = start + len(original)
         target, size = report['trampoline_start'], report['trampoline_size']
         self.assertEqual((report['image_start'], report['image_end']), (start, end))
@@ -559,8 +586,7 @@ class AllocatorSpanTests(unittest.TestCase):
         self.assertEqual(image[target + size - 5], 0xe9)
         self.assertEqual(target + size + struct.unpack_from('<i', image, target + size - 4)[0], end)
         self.assertEqual(hashlib.sha256(image[target:target + size]).hexdigest(), report['trampoline_sha256'])
-        self.assertEqual(image[target + size - 5 - len(bytes.fromhex(span[8])):target + size - 5],
-                         bytes.fromhex(span[8]))
+        self.assertEqual(image[target + size - 5 - len(tail):target + size - 5], tail)
 
     def test_public_four_spans_transfer_report_and_unchanged_surroundings(self):
         self.assertEqual(len(self.sites), 4)
@@ -577,7 +603,7 @@ class AllocatorSpanTests(unittest.TestCase):
                                 for s, n, flags in self.segments))
         self.assertEqual(self.translated[:len(expected)], expected)
         self.assertEqual(hashlib.sha256(self.base_image).hexdigest(), self.base_hash)
-        self.assertEqual(self.report['plan_version'], 3)
+        self.assertEqual(self.report['plan_version'], 4)
         self.assertEqual(self.report['patched_sites'], 4)
         self.assertEqual(self.report['span_patches'], 4)
         self.assertEqual(self.report['counts_by_instruction'], {'lzcnt': 3, 'tzcnt': 1})
@@ -614,7 +640,7 @@ class AllocatorSpanTests(unittest.TestCase):
                 expected_bucket += 1
             self.assertEqual(subtract32(32, count)[0], expected_bucket)
         for span in (SPANS[0], SPANS[2], SPANS[3]):
-            body = self.applied_body(span) + bytes.fromhex(span[9])
+            body = self.applied_body(span) + self.parts(span)[2]
             with NativeHarness(body, keystone, capstone) as harness:
                 values = range(65536) if span == SPANS[0] else self.values()
                 for value in values:
@@ -657,14 +683,16 @@ class AllocatorSpanTests(unittest.TestCase):
         for span_index, span in enumerate(SPANS):
             # The persisted plan is sorted independently; locate the matching tuple.
             site_index = next(i for i, s in enumerate(self.sites) if s['address'] == span[0])
-            original = bytes.fromhex(span[7])
+            original, tail, _ = self.parts(span)
             mutations = {
-                'tail_byte': lambda s: s.update(bytes=s['bytes'][:-2] + '01'),
-                'tail_omitted': lambda s: s.update(bytes=s['bytes'][:8]),
-                'tail_extended': lambda s: s.update(bytes=s['bytes'] + '90'),
-                'tail_duplicated': lambda s: s.update(bytes=s['bytes'] + s['span']['tail_bytes']),
+                'tail_omitted': lambda s: s.update(length=4),
+                'tail_shortened': lambda s: s.update(length=s['length'] - 1),
+                'tail_extended': lambda s: s.update(length=s['length'] + 1),
+                'check': lambda s: s.update(check='0' * 16),
                 'tail_metadata': lambda s: s['span'].update(tail_bytes='90'),
-                'instruction_neighbor': lambda s: s.update(instruction=s['instruction'] + '; nop'),
+                'old_bytes_field': lambda s: s.update(bytes=original.hex()),
+                'instruction_neighbor': lambda s: s.update(mnemonic=s['mnemonic'] + '; nop'),
+                'mnemonic_swapped': lambda s: s.update(mnemonic='tzcnt' if s['mnemonic'] == 'lzcnt' else 'lzcnt'),
                 'unlisted_address': lambda s: s.update(address=s['address'] + 1),
                 'wrong_module': lambda s: s.update(module='libc.prx'),
                 'count_length': lambda s: s['span'].update(count_length=5),
@@ -678,7 +706,7 @@ class AllocatorSpanTests(unittest.TestCase):
                 'return_address': lambda s: s.update(return_address=s['address'] + 4),
                 'return_target': lambda s: s.update(return_target=s['address'] + 4),
                 'rip_fixup': lambda s: s.update(rip_fixups=[{'offset': 1, 'next_offset': 5, 'target': 0}]),
-                'body_tail_duplicate': lambda s: s.update(body=s['body'] + s['span']['tail_bytes']),
+                'body_tail_duplicate': lambda s: s.update(body=s['body'] + tail.hex()),
                 'body_altered': lambda s: s.update(body='90'),
             }
             for label, mutate in mutations.items():
@@ -686,17 +714,16 @@ class AllocatorSpanTests(unittest.TestCase):
                     data = self.fixture()
                     mutate(data['plan']['sites'][site_index])
                     self.reject(data)
-            for version in (1, 2):
-                for stripped in (False, True):
-                    data = self.fixture()
-                    data['plan']['version'] = version
-                    if stripped:
-                        for site in data['plan']['sites']:
-                            site.pop('kind')
-                            site.pop('span')
-                    with self.subTest(version=version, stripped=stripped):
-                        self.reject(data)
-            for address in (span[0] + 4, FUNCTION_START):
+            for version, stripped in ((3, False), (3, True), (4, True)):
+                data = self.fixture()
+                data['plan']['version'] = version
+                if stripped:
+                    for site in data['plan']['sites']:
+                        site.pop('kind')
+                        site.pop('span')
+                with self.subTest(version=version, stripped=stripped):
+                    self.reject(data)
+            for address in (span[0] + 4, span[0] + len(original) - 1, FUNCTION_START):
                 data = self.fixture()
                 data['image'] = bytearray(self.base_image)
                 data['image'][address] ^= 1
@@ -711,7 +738,7 @@ class AllocatorSpanTests(unittest.TestCase):
 
     def test_entries_unknown_candidates_and_resolved_relocations_reject(self):
         for site_index, site in enumerate(self.sites):
-            start, end = site['address'], site['address'] + len(bytes.fromhex(site['bytes']))
+            start, end = site['address'], site['address'] + site['length']
             for kind in ('symbol', 'function', 'direct_branch', 'relocation', 'jump_table', 'landing_pad'):
                 for address in (start + 1, start + 4, end - 1):
                     data = self.fixture()
@@ -750,7 +777,7 @@ class AllocatorSpanTests(unittest.TestCase):
 
     def test_entire_span_overlap_mapping_and_relocation_adjacency(self):
         for site in self.sites:
-            start, end = site['address'], site['address'] + len(bytes.fromhex(site['bytes']))
+            start, end = site['address'], site['address'] + site['length']
             for relocation in (start - 7, start + 4, end - 1):
                 data = self.fixture()
                 data['relocations'] = [(relocation, 1, 0, 0)]
@@ -761,8 +788,8 @@ class AllocatorSpanTests(unittest.TestCase):
                 self.assertEqual(cpu_compat.patch_image(**data)[2]['span_patches'], 4)
             for address in (start, start + 4):
                 data = self.fixture()
-                data['plan']['sites'].append({'module': 'eboot.bin', 'address': address,
-                    'bytes': self.base_image[address:address + 5].hex(), 'body': '90', 'instruction': 'blsr rax, rax'})
+                data['plan']['sites'].append({'module': 'eboot.bin', 'address': address, 'length': 5,
+                    'check': cpu_compat.site_check(self.base_image[address:address + 5]), 'body': '90', 'mnemonic': 'blsr'})
                 self.reject(data)
             data = self.fixture()
             split = start + 5
@@ -778,7 +805,7 @@ class AllocatorSpanTests(unittest.TestCase):
         alias_count = self.builder.body(alias[1], alias[2])
         mutants = (
             ('BSR semantics', lz, asm('bsr eax, eax; mov ecx, 32'), 512),
-            ('MOV before count alias', alias, bytes.fromhex(alias[8]) + alias_count, 512),
+            ('MOV before count alias', alias, self.parts(alias)[1] + alias_count, 512),
             ('MOV omitted', lz, lz_count, 512),
             ('MOV changes flags', lz, self.applied_body(lz) + asm('stc'), 512),
             ('index correct GPR clobber', alias, self.applied_body(alias) + asm('mov rbx, 0'), 512),

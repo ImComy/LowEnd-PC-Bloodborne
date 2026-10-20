@@ -17,9 +17,8 @@ import subprocess
 import sys
 
 PORT = Path(__file__).resolve().parent
-# The Xbox button prompts mod the package ships (packaging/windows/mods).
-XBOX_PROMPTS = 'Xbox 360 Prompts (Elden Ring)'
-# The keyboard key images the port ships, off until chosen (launcher KEYBOARD_PROMPTS, PCBButtons).
+# The keyboard key images (PCBButtons from Nexus Mods), as the launcher adds them to the mods
+# folder (launcher KEYBOARD_PROMPTS).
 KEYBOARD_PROMPTS = 'Keyboard Prompts (PCBButtons)'
 
 
@@ -291,19 +290,21 @@ def main():
                    optional=True)
         if (hud_layer / 'dvdroot_ps4').is_dir():
             generated.append(str(hud_layer))
-    # The Xbox button prompts the package ships (packaging/windows/mods in a source checkout).
-    bundled = [folder for folder in (PORT / 'mods' / XBOX_PROMPTS, PORT / 'packaging/windows/mods' / XBOX_PROMPTS)
-               if folder.is_dir()][:1]
-    bundled_off = [folder for folder in (PORT / 'bundled' / KEYBOARD_PROMPTS,
-                                         PORT / 'packaging/windows/bundled' / KEYBOARD_PROMPTS)
-                   if folder.is_dir()][:1]
+    # Text and voice languages (scripts/language_files.py): Brazilian Portuguese text from the
+    # game's porbr files, and the voice language apart from the text's (BB_VOICE_LANGUAGE).
+    # BB_LANGUAGE_FILES=0: the game's own choice. (After Berleis, Supermedo PR #20.)
+    language_layer = Path(out) / 'language'
+    voice = env.get('BB_VOICE_LANGUAGE') or ini_value(config, 'voice_language') or ''
+    if env.get('BB_LANGUAGE_FILES') != '0':
+        run_script('language_files.py', game, '--out', language_layer, '--language', env.get('BB_LANGUAGE', ''),
+                   '--voice', voice, optional=True)
+        if (language_layer / 'dvdroot_ps4').is_dir():
+            generated.append(str(language_layer))
     game = Path(run_script('mods.py', game, '--out', out,
                            '--mods-dir', env.get('BB_MODS_DIR', data / 'mods'),
                            '--config', env.get('BB_MODS_CONFIG', data / 'mods.json'),
                            '--enabled', env.get('BB_MODS_ENABLED', '1'),
                            *(arg for folder in generated for arg in ('--generated', folder)),
-                           *(arg for folder in bundled for arg in ('--bundled', folder)),
-                           *(arg for folder in bundled_off for arg in ('--bundled-off', folder)),
                            capture=True).strip())
     mod_view = game if game.resolve() != original_game else None
     # Keyboard prompts: whether the key images are among the mods in use, as the launcher's
@@ -407,6 +408,13 @@ def main():
             env.setdefault('BB_DMEM_MB', '9152')
             print(f'Output {scaled_output}: scene {scaled_render}, direct memory {env["BB_DMEM_MB"]} MiB '
                   '(live_resolution=1: live changes)')
+        # The game's graphics heaps at PC sizes need the larger pool (patches.py HEAP_PATCH;
+        # pc_heaps=0 / BB_PC_HEAPS=0: the PS4's heaps, the larger pool only above 1080p).
+        if patched and (env.get('BB_PC_HEAPS') or ini_value(config, 'pc_heaps') or '1') != '0':
+            env.setdefault('BB_DMEM_MB', '9152')
+        # Frame limiter slots on the planned grid (driver.cpp, Supermedo d646b1d); off by default.
+        if not env.get('BB_FRAME_CAP_GRID') and ini_value(config, 'frame_cap_grid') == '1':
+            env['BB_FRAME_CAP_GRID'] = '1'
         extra = env.get('BB_PATCHES', '')
         # Chinese text (BB_LANGUAGE 10, 11) shows only with the game's region unlocked
         # (k1m0206, Supermedo PR #91; its server lookups stay on Europe).
@@ -423,7 +431,12 @@ def main():
                    '--output-res', env.get('BB_OUTPUT_RES', ''),
                    '--patches-dir', env.get('BB_PATCHES_DIR', data / 'patches'),
                    '--patches-config', env.get('BB_PATCHES_CONFIG', data / 'patches.json'))
-        if not env.get('BB_VBLANK_HZ'):
+        if fps in ('120', '144'):
+            # 90 FPS++ scaled to the rate (patches.py SCALED_FPS): vblank and frame limit at the
+            # rate, as Awakenchan/BloodBorneButPc sets them; another cap would change its timing.
+            env['BB_VBLANK_HZ'] = env.get('BB_VBLANK_HZ') or fps
+            env['BB_FPS_LIMIT'] = fps
+        elif not env.get('BB_VBLANK_HZ'):
             env['BB_VBLANK_HZ'] = {'uncap': '0', '90': '90'}.get(fps, '60')
 
         # The in-game restart starts this script again once this process is gone.

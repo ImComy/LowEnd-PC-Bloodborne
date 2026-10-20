@@ -2,6 +2,7 @@
 // Bloodborne 1.09 camera and floating UI corrections adapted from bbhost's
 // src/engine/live_resolution.cpp and src/engine/graphics_patch.cpp (7c790536).
 #include "aspect_thunk.h"
+#include "code_check.h"
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
@@ -13,8 +14,7 @@ constexpr uint64_t Base = 0x400000;
 constexpr float OriginalAspect = 16.0f / 9.0f;
 float aspect = OriginalAspect;
 constexpr uint64_t Blend = 0x18368b0;
-constexpr uint8_t Prologue[] = {0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,
-    0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x48};
+constexpr BbCode Prologue = {17, 0x522307a1cb8edc7eull};  // push rbp ... sub rsp, 0x48
 struct Stage { uint64_t at; bool height, rcx = false; };
 constexpr Stage Stages[] = {
     {0x19e83af,false},{0x1ffd491,false},{0x1ffd4d1,true},
@@ -77,7 +77,7 @@ extern "C" void aspect_ratio_bind_image(void* image,uint64_t size) {
     auto equals=[&](uint64_t address,const void* expected,size_t n) {
         auto* p=at(address,n); return p && std::memcmp(p,expected,n)==0;
     };
-    bool valid=equals(Blend,Prologue,sizeof(Prologue));
+    bool valid=bb_code_is(at(Blend,Prologue.n),Prologue);
     const float scale0[]={0.5f,-0.5f}, right0=1920, bottom0=1080;
     for (auto a:Scales) valid &= equals(a,scale0,8);
     valid &= equals(0x4d26ea4,&right0,4) && equals(0x4d26ea8,&bottom0,4);
@@ -93,7 +93,7 @@ extern "C" void aspect_ratio_bind_image(void* image,uint64_t size) {
     auto* stub=static_cast<uint8_t*>(VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
     if (!stub) { std::puts("Aspect: cannot allocate camera trampoline"); return; }
     thunk_emit_prologue_stub(stub,0,reinterpret_cast<void*>(hook),
-        reinterpret_cast<uint64_t>(at(Blend,sizeof(Prologue)))+sizeof(Prologue),Prologue,sizeof(Prologue),false);
+        reinterpret_cast<uint64_t>(at(Blend,Prologue.n))+Prologue.n,at(Blend,Prologue.n),Prologue.n,false);
     DWORD old=0;
     if (!VirtualProtect(stub,4096,PAGE_EXECUTE_READ,&old)) {
         VirtualFree(stub,0,MEM_RELEASE); std::puts("Aspect: cannot protect camera trampoline"); return;
@@ -113,7 +113,7 @@ extern "C" void aspect_ratio_bind_image(void* image,uint64_t size) {
     }
     for (const auto& b:Bounds) std::memcpy(at(b.at,b.n),
         (b.vertical?ry>1.0005f:rx>1.0005f)?b.open:b.game,b.n);
-    uint8_t jump[sizeof(Prologue)]={0xff,0x25,0,0,0,0};
+    uint8_t jump[Prologue.n]={0xff,0x25,0,0,0,0};
     const uint64_t address=reinterpret_cast<uint64_t>(stub);
     std::memcpy(jump+6,&address,8); std::fill(jump+14,jump+sizeof(jump),0x90);
     std::memcpy(at(Blend,sizeof(jump)),jump,sizeof(jump));

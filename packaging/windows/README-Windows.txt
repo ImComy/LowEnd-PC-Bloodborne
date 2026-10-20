@@ -46,7 +46,9 @@ Starting
 - In the game, Insert (or L3+R3 on a gamepad) opens the guide menu: Home, Achievements,
   Settings, and Mods/Cheats. Use LB/RB to switch sections, A to select, and B to go back.
   In Mods, choose PlayStation, Xbox or Keyboard key prompts, then select
-  "Apply mods and restart". This also applies gameplay patch changes.
+  "Apply mods and restart". This also applies gameplay patch changes. Xbox and Keyboard
+  prompts are Nexus Mods downloads (mods 30 and 460): add them once from the launcher's
+  Settings > Controls > Button prompts, which opens the mod page and takes the downloaded file.
 - Keyboard and mouse work alongside a controller. Default keys: WASD move, I/J/K/L camera
   (or click the window for the mouse camera), Space dodge, E interact, R blood vial, F item,
   C transform, left mouse attack, Shift + left mouse or V strong attack, right mouse firearm,

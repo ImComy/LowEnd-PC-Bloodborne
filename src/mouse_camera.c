@@ -37,15 +37,15 @@ enum {
 static const float COUNTS_PER_RADIAN = 900.0f, FLICK_COUNTS = 60.0f;
 static const float PI = 3.14159265f, TAU = 6.28318531f;
 
-static const unsigned char update_code[9] = {0xc4, 0xc1, 0x7a, 0x10, 0x85, 0x40, 0x01, 0x00, 0x00};
+static const BbCode update_code = {9, 0x025464a80bd36ee0ull};
 static const struct {
     uint64_t at;
-    unsigned char code[9];
+    BbCode code;
 } stores[] = {
-    {0x143c6e8, {0xc4, 0xc1, 0x7a, 0x11, 0x85, 0x44, 0x01, 0x00, 0x00}}, /* vmovss [r13+0x144], xmm0 */
-    {0x143c984, {0xc4, 0xc1, 0x7a, 0x11, 0x8d, 0x30, 0x01, 0x00, 0x00}}, /* vmovss [r13+0x130], xmm1 */
-    {0x143dde6, {0xc4, 0xc1, 0x7a, 0x11, 0x85, 0x94, 0x02, 0x00, 0x00}}, /* vmovss [r13+0x294], xmm0 */
-    {0x143c870, {0xc4, 0xc1, 0x7a, 0x11, 0xad, 0x44, 0x01, 0x00, 0x00}}, /* vmovss [r13+0x144], xmm5 */
+    {0x143c6e8, {9, 0x599f4439954122e5ull}}, /* vmovss [r13+0x144], xmm0 */
+    {0x143c984, {9, 0x71be1eacbb1f4181ull}}, /* vmovss [r13+0x130], xmm1 */
+    {0x143dde6, {9, 0x414d109e95be3994ull}}, /* vmovss [r13+0x294], xmm0 */
+    {0x143c870, {9, 0x5e4bc59600d8836dull}}, /* vmovss [r13+0x144], xmm5 */
 };
 #define STORE_COUNT ((int)(sizeof(stores) / sizeof(*stores)))
 
@@ -153,20 +153,20 @@ int bb_mouse_camera_install(void) {
     if (env && !strcmp(env, "0")) return 0;
     /* Every site first, so a mismatch leaves the game unchanged. */
     const unsigned char *update = bb_guest(CAMERA_UPDATE);
-    int ok = update && !memcmp(update, update_code, sizeof(update_code));
-    for (int i = 0; ok && i < STORE_COUNT; ++i) ok = !memcmp(bb_guest(stores[i].at), stores[i].code, 9);
+    int ok = bb_code_is(update, update_code);
+    for (int i = 0; ok && i < STORE_COUNT; ++i) ok = bb_code_is(bb_guest(stores[i].at), stores[i].code);
     if (!ok) {
         printf("Mouse camera: the camera code is not game 1.09's; not installed\n");
         return 0;
     }
     for (int i = 0; i < STORE_COUNT; ++i) {
-        g_skips[i] = bb_hook_skip(stores[i].at, stores[i].code, 9);
+        g_skips[i] = bb_hook_skip(stores[i].at, stores[i].code);
         if (!g_skips[i]) {
             printf("Mouse camera: %s\n", bb_hooks_error());
             return i;
         }
     }
-    if (bb_hook_mid(CAMERA_UPDATE, update_code, sizeof(update_code), on_camera_update)) {
+    if (bb_hook_mid(CAMERA_UPDATE, update_code, on_camera_update)) {
         printf("Mouse camera: %s\n", bb_hooks_error());
         return STORE_COUNT;
     }

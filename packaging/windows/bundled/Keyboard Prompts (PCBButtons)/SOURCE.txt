@@ -1,8 +1,0 @@
-PCBButtons: keyboard and mouse UI prompts for Bloodborne, version 1.2
-Creator: JinkiJinn
-Source: https://www.nexusmods.com/bloodborne/mods/460
-The creator allows uploads to other sites with credit, and modification with credit, per the
-mod page's Permissions and credits section (checked 2026-10-12).
-The images show this layout, which the launcher binds when Keyboard is chosen:
-E interact, Left Shift dodge, R blood vial, Q item, F transform, mouse buttons for attacks,
-Ctrl + left click strong attack, Space L3, middle click lock on, G gestures, H items, Esc menu.

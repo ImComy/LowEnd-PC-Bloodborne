@@ -121,7 +121,9 @@ EN = {
     "Частота кадров": "Frame rate",
     "Режим": "Mode",
     "Какой патч частоты кадров применить к игре": "Which frame rate patch to apply to the game",
-    "Без ограничения (патч)": "Unlocked (patch)",
+    "Без ограничения (патч; может зависнуть в конце заставки Викарии Амелии)":
+        "Unlocked (patch; can freeze at the end of Vicar Amelia's intro)",
+    "120 (рекомендуется)": "120 (recommended)",
     "30 (как на PS4)": "30 (as on PS4)",
     "Ограничение FPS": "FPS limit",
     "0 — по частоте экрана (не выше 120 Гц); укажите число, чтобы ограничить иначе":

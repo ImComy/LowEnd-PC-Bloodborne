@@ -101,8 +101,8 @@ Released as 1.7 (merged into `windows`; each also on its branch):
 
 - The redesigned launcher and in-game guide (`feature/ui-redesign`): controller movement on the
   guide's rail and pages, L3 + R3 to close, the mouse pointer.
-- Keyboard prompts shipped with the port (PCBButtons by JinkiJinn): choosing Keyboard in the
-  launcher and in the guide.
+- Keyboard prompts (PCBButtons by JinkiJinn): choosing Keyboard in the launcher and in the
+  guide. Since 1.9.8 neither prompt mod ships; the launcher adds the player's own Nexus download.
 - `feature/menu-pointer`: the mouse in the game's menus (after droogie's bbhost).
 - `fix/safe-saves-43`, `fix/indirect-guard-41`, `fix/xbox-touchpad-39`, `fix/retail-serials-47`,
   `perf/skip-empty-draws-34`, `fix/dlss-device-fallback`, `fix/pad-calibration-71`,

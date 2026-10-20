@@ -169,32 +169,6 @@ class ModTests(unittest.TestCase):
         self.assertEqual((run('0') / 'a.dcx').read_bytes(), b'generated')
         self.assertEqual((self.assets / 'a.dcx').read_bytes(), b'original')
 
-    def test_bundled_off_mods_arrive_switched_off(self):
-        # The keyboard prompts replace the same images as the Xbox ones: seeded, but off.
-        keyboard = self.root / 'package' / 'Keyboard Prompts'
-        (keyboard / 'menu').mkdir(parents=True)
-        (keyboard / 'menu/common.tpf.dcx').write_bytes(b'keys')
-        config = self.root / 'mods.json'
-        mods.seed_bundled(self.moddir, [], [keyboard], config)
-        self.assertTrue((self.moddir / 'Keyboard Prompts/menu/common.tpf.dcx').is_file())
-        self.assertIn('Keyboard Prompts', json.loads(config.read_text())['disabled'])
-        self.assertNotIn('Keyboard Prompts', mods.selected(self.moddir, config))
-        # Once chosen it stays on: seeding again does not switch it off.
-        config.write_text(json.dumps({'disabled': [], 'enabled': ['Keyboard Prompts']}))
-        mods.seed_bundled(self.moddir, [], [keyboard], config)
-        self.assertIn('Keyboard Prompts', mods.selected(self.moddir, config))
-
-    def test_bundled_mods_are_added_once(self):
-        bundled = self.root / 'package' / 'Xbox Prompts'
-        (bundled / 'menu').mkdir(parents=True)
-        (bundled / 'menu/common.tpf.dcx').write_bytes(b'prompts')
-        mods.seed_bundled(self.moddir, [bundled])
-        self.assertEqual((self.moddir / 'Xbox Prompts/menu/common.tpf.dcx').read_bytes(), b'prompts')
-        import shutil
-        shutil.rmtree(self.moddir / 'Xbox Prompts')  # the player deletes it
-        mods.seed_bundled(self.moddir, [bundled])
-        self.assertFalse((self.moddir / 'Xbox Prompts').exists())
-
     def test_app0_wrapped_mod_discovered(self):
         self.moddir.mkdir()
         (self.moddir / 'Wrapped/app0/dvdroot_ps4').mkdir(parents=True)

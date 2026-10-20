@@ -23,24 +23,35 @@ from prepare import nid
 # xor eax,eax; loop: cmp byte [rdi+rax],0; je done; inc rax; jmp loop; done: ret.
 STRLEN_BASELINE = bytes.fromhex('31c0803c0700740548ffc0ebf5c3')
 LIBC_SHA256 = '4378b47f46f1d856824a6f971db1a0c3f41833b77f49d2fba9538f667a139166'
+# The inspected strlen (0x2f970, 224 bytes), so its replacement never lands on another build.
+STRLEN_SHA256 = '6ee29803ad8be5c14664a718a0d6e95aca73a69b45dd8bfa90fb50c0a3f08087'
 MAX_IMAGE_SIZE = 512 * 1024 * 1024
 SUPPORTED = frozenset(('andn', 'bextr', 'blsr', 'blsi', 'blsmsk', 'tzcnt', 'lzcnt', 'movbe'))
+PLAN_VERSION = 4
 # D015 is a closed exception, never a general instruction-stealing facility.
 COUNT_SPAN_MODULE_SHA256 = 'd65f0b4f01d59166aed16f8604196d8b7dd805abbf0758b356e8f1354c9429f9'
 COUNT_SPAN_FUNCTION = (0x26addc0, 0x26adf49,
                        '16729bb23b2f814ef311ef0a3f3aac2d91f16110a206885eae694f2b17f38133')
 COUNT_SPAN_EVIDENCE_REFERENCE = 'docs/evidence/TASK-001/allocator-span-entries.json'
-COUNT_SPAN_EVIDENCE_SHA256 = 'c665159c757c6638e1edbf4fc20269720ca9431213a4ba05f7619f4738d30b7b'
+COUNT_SPAN_EVIDENCE_SHA256 = 'd80ca9a021546afde150a3fd4749a05cbdf14da5dd5332f765f82e61f135d617'
+# address: (length, site_check of the original bytes, mnemonic, SHA256 of the reviewed body).
+# Only lengths and hashes: the bytes themselves are read from the player's own dump.
 COUNT_SPANS = {
-    0x26adde5: ('f30fbdc0b920000000', 'lzcnt eax, eax',
+    0x26adde5: (9, '29b9b316bd49d9cf', 'lzcnt',
                 '071663082920f0142ded5530ea5f039c945cf16e24f8c464b51b042db5e50284'),
-    0x26addfe: ('f30fbcc883f910', 'tzcnt ecx, eax',
+    0x26addfe: (7, '543d1aacaffff543', 'tzcnt',
                 'e977e8446d3c70387ad8b12424546ebc5c9a0c1d84037ab57f69fb64e150634e'),
-    0x26adebe: ('f30fbdfaba1f000000', 'lzcnt edi, edx',
+    0x26adebe: (9, '687a9f36bd45337f', 'lzcnt',
                 '165fa7548268a439b5ff621df11cff11578f1ae8fe76ea2d0087c08193f40f53'),
-    0x26adf12: ('f30fbdf1b91f000000', 'lzcnt esi, ecx',
+    0x26adf12: (9, '998aa47f519891a0', 'lzcnt',
                 '922a7f4f61bdd53b9cab783faebbd114691319f3c223cc857fe54f920f531745'),
 }
+
+
+def site_check(original):
+    """What a plan stores for a site's original bytes: a 64-bit SHA256 prefix. The module's
+    full SHA256 already pins the dump; this catches a plan applied at the wrong address."""
+    return hashlib.sha256(bytes(original)).hexdigest()[:16]
 
 
 def _unique_fields(pairs):
@@ -53,19 +64,19 @@ def _unique_fields(pairs):
 
 
 def _count_span_tail(site, original, body, image, main, locations, mapped, relocations):
-    """Validate the exact reviewed sequence/context; return its literal tail."""
-    if set(site) != {'kind', 'module', 'address', 'bytes', 'body', 'instruction', 'rip_fixups', 'span'}:
+    """Validate the exact reviewed sequence/context; return its tail (read from the image)."""
+    if set(site) != {'kind', 'module', 'address', 'length', 'check', 'body', 'mnemonic', 'rip_fixups', 'span'}:
         raise ValueError('Legacy CPU count span site has missing or unknown fields; return targets are not configurable.')
     address = site['address']
     spec = COUNT_SPANS.get(address)
-    if (site['module'] != 'eboot.bin' or not spec or original.hex() != spec[0]
-            or site['instruction'] != spec[1]
+    if (site['module'] != 'eboot.bin' or not spec or len(original) != spec[0]
+            or site_check(original) != spec[1] or site['mnemonic'] != spec[2]
             or locations['eboot.bin'][2] != COUNT_SPAN_MODULE_SHA256):
         raise ValueError('Legacy CPU count span is outside the closed whitelist.')
-    if hashlib.sha256(body).hexdigest() != spec[2]:
+    if hashlib.sha256(body).hexdigest() != spec[3]:
         raise ValueError('Legacy CPU count span body is not the reviewed count-only translation.')
     span = site.get('span')
-    fields = {'count_length', 'tail_bytes', 'instruction_lengths', 'function_start',
+    fields = {'count_length', 'instruction_lengths', 'function_start',
               'function_end', 'function_sha256', 'entry_evidence'}
     if not isinstance(span, dict) or set(span) != fields:
         raise ValueError('Legacy CPU count span metadata is incomplete or has unknown fields.')
@@ -74,7 +85,6 @@ def _count_span_tail(site, original, body, image, main, locations, mapped, reloc
             or type(span['function_start']) is not int or span['function_start'] != function_start
             or type(span['function_end']) is not int or span['function_end'] != function_end
             or span['function_sha256'] != function_hash
-            or span['tail_bytes'] != original[4:].hex()
             or type(span['instruction_lengths']) is not list
             or any(type(n) is not int for n in span['instruction_lengths'])
             or span['instruction_lengths'] != [4, len(original) - 4]):
@@ -261,7 +271,9 @@ def patch_libc(module):
     if not enabled():
         return []
     if module['sha256'] != LIBC_SHA256:
-        raise ValueError('Legacy CPU profile expects the inspected libc dump; its SHA256 changed.')
+        raise ValueError('Legacy CPU profile expects the inspected libc dump; its SHA256 changed '
+                         '(the profile is made for the SELF files of the dump: a plain-ELF or '
+                         'otherwise different libc.prx cannot use it).')
     matches = [symbol for symbol in module['symbols'] if symbol['section'] and symbol['type'] == 2
                and symbol['name'].split('#')[0] == nid('strlen')]
     if len(matches) != 1:
@@ -272,7 +284,7 @@ def patch_libc(module):
                    and symbol['value'] + symbol['size'] <= part['vaddr'] + part['filesz'])
     offset = segment['offset'] + symbol['value'] - segment['vaddr']
     original = bytes(module['elf'][offset:offset + symbol['size']])
-    if symbol['value'] != 0x2f970 or symbol['size'] != 224 or original[24:29] != bytes.fromhex('c4e2f8f2c6'):
+    if symbol['value'] != 0x2f970 or symbol['size'] != 224 or hashlib.sha256(original).hexdigest() != STRLEN_SHA256:
         raise ValueError('Legacy CPU strlen signature does not match the inspected implementation.')
     module['elf'][offset:offset + symbol['size']] = STRLEN_BASELINE + b'\x90' * (symbol['size'] - len(STRLEN_BASELINE))
     report = {'function': 'strlen', 'address': hex(symbol['value']), 'original_sha256': hashlib.sha256(original).hexdigest(),
@@ -306,10 +318,11 @@ def _relative(target, next_address, label):
 def patch_image(image, segments, main, modules, relocations, *, plan=None, active=None):
     """Return a translated copy of a linked image; never mutate caller inputs.
 
-    Plan v1 contains register-only bodies. V2 additionally allows RIP-relative
-    operand fixups, each giving its displacement offset, next instruction offset
-    and module-relative target. V3 permits only the four D015 count spans.
-    No disassembler/assembler is needed at runtime.
+    A plan (v4) names each site by module, address, length and site_check of its
+    original bytes; it holds no game bytes, which are read from the image. Bodies
+    may carry RIP-relative operand fixups, each giving its displacement offset,
+    next instruction offset and module-relative target. Count spans are limited
+    to the four D015 sites. No disassembler/assembler is needed at runtime.
     All active-profile guards are checked before publishing anything. Disabling
     the profile does not load a plan or change image bytes/segment metadata.
     """
@@ -335,8 +348,8 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
             raw_plan = json.dumps(plan, sort_keys=True, separators=(',', ':')).encode('utf-8')
     except (OSError, UnicodeError, TypeError, json.JSONDecodeError) as error:
         raise ValueError(f'Legacy CPU plan could not be loaded: {error}') from error
-    if not isinstance(plan, dict) or type(plan.get('version')) is not int or plan['version'] not in (1, 2, 3):
-        raise ValueError('Legacy CPU plan version must be 1, 2 or 3.')
+    if not isinstance(plan, dict) or type(plan.get('version')) is not int or plan['version'] != PLAN_VERSION:
+        raise ValueError(f'Legacy CPU plan version must be {PLAN_VERSION}.')
     report['plan_version'] = plan['version']
     if not isinstance(plan.get('modules'), dict) or not isinstance(plan.get('sites'), list):
         raise ValueError('Legacy CPU plan requires modules and sites.')
@@ -383,7 +396,9 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
         if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
             raise ValueError(f'Legacy CPU {name}: source SHA256 is invalid.')
         if plan['modules'][name] != digest:
-            raise ValueError(f'Legacy CPU {name}: source SHA256 does not match the plan.')
+            raise ValueError(f'Legacy CPU {name}: source SHA256 does not match the plan (the plan is '
+                             'made for the SELF files of the 1.09 dump: a plain-ELF or otherwise '
+                             'different file cannot use it).')
     report['source_hashes'] = {name: values[2] for name, values in locations.items()}
     report['plan_sha256'] = hashlib.sha256(raw_plan).hexdigest()
 
@@ -409,30 +424,34 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
         name = site['module']
         address = _uint(site.get('address'), f'{name} site address')
         label = f'{name}+{address:#x}'
-        original = _hex_bytes(site.get('bytes'), label + ' original bytes', 5, 15)
+        length = site.get('length')
+        if type(length) is not int or not 5 <= length <= 15:
+            raise ValueError(f'Legacy CPU {label} original length is invalid.')
+        check = site.get('check')
+        if not isinstance(check, str) or not re.fullmatch('[0-9a-f]{16}', check):
+            raise ValueError(f'Legacy CPU {label} original check must be 16 hexadecimal digits.')
         body = bytearray(_hex_bytes(site.get('body'), label + ' body', 1, 4096))
-        instruction = site.get('instruction')
-        if not isinstance(instruction, str) or instruction.split(' ', 1)[0] not in SUPPORTED:
-            raise ValueError(f'Legacy CPU {label}: unsupported instruction description.')
+        mnemonic = site.get('mnemonic')
+        if not isinstance(mnemonic, str) or mnemonic not in SUPPORTED:
+            raise ValueError(f'Legacy CPU {label}: unsupported instruction.')
         kind = site.get('kind', 'instruction')
         if kind not in ('instruction', 'count_span'):
             raise ValueError(f'Legacy CPU {label}: unsupported site kind.')
         is_span = kind == 'count_span'
-        if is_span and plan['version'] != 3:
-            raise ValueError(f'Legacy CPU {label}: count spans require plan version 3.')
+        base, size, _ = locations[name]
+        start = base + address
+        end = start + length
+        if address + length > size or not mapped(start, length, executable=True):
+            raise ValueError(f'Legacy CPU {label}: site is outside its executable module segment.')
+        original = bytes(image[start:end])
+        if site_check(original) != check:
+            raise ValueError(f'Legacy CPU {label}: original instruction bytes do not match.')
         # F3 0F BC/BD register count without REX is exactly four bytes. A
         # longer record cannot be smuggled in as a legacy single instruction.
         short_count_prefix = (original[:3] in (b'\xf3\x0f\xbc', b'\xf3\x0f\xbd')
                               and original[3] & 0xc0 == 0xc0)
         if not is_span and ('span' in site or short_count_prefix):
             raise ValueError(f'Legacy CPU {label}: count span cannot be treated as a single instruction.')
-        base, size, _ = locations[name]
-        start = base + address
-        end = start + len(original)
-        if address + len(original) > size or not mapped(start, len(original), executable=True):
-            raise ValueError(f'Legacy CPU {label}: site is outside its executable module segment.')
-        if image[start:end] != original:
-            raise ValueError(f'Legacy CPU {label}: original instruction bytes do not match.')
         index = bisect.bisect_left(relocation_targets, start - 7)
         if index < len(relocation_targets) and relocation_targets[index] < end:
             raise ValueError(f'Legacy CPU {label}: site overlaps a relocation.')
@@ -443,8 +462,8 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
                 span_evidence.append(evidence)
         cursor = (cursor + 15) & ~15
         fixups = site.get('rip_fixups', [])
-        if not isinstance(fixups, list) or (fixups and plan['version'] < 2):
-            raise ValueError(f'Legacy CPU {label}: RIP fixups require plan version 2.')
+        if not isinstance(fixups, list):
+            raise ValueError(f'Legacy CPU {label}: invalid RIP fixups.')
         fixed_bytes = set()
         for fixup in fixups:
             if not isinstance(fixup, dict):
@@ -471,16 +490,16 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
         cursor += len(body) + 5
         if cursor > MAX_IMAGE_SIZE:
             raise ValueError('Legacy CPU translated image exceeds the probe limit.')
-        counts[instruction.split(' ', 1)[0]] += 1
+        counts[mnemonic] += 1
     by_address = sorted(operations)
     if any(left[1] > right[0] for left, right in zip(by_address, by_address[1:])):
         raise ValueError('Legacy CPU instruction sites overlap or are duplicated.')
     for item in plan['unhandled']:
         if not isinstance(item, dict) or item.get('module') not in locations or not isinstance(item.get('reason'), str):
             raise ValueError('Legacy CPU invalid unhandled instruction report.')
-        if not isinstance(item.get('instruction'), str):
-            raise ValueError('Legacy CPU unhandled site has no instruction description.')
-    semantic_risk = sum(item['instruction'].split(' ', 1)[0] in ('lzcnt', 'tzcnt')
+        if not isinstance(item.get('mnemonic'), str):
+            raise ValueError('Legacy CPU unhandled site has no instruction mnemonic.')
+    semantic_risk = sum(item['mnemonic'] in ('lzcnt', 'tzcnt')
                         for item in plan['unhandled'])
     partial = partial_allowed()
     if span_reports and not partial:
@@ -493,8 +512,7 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
     report.update(patched_sites=len(operations), counts_by_instruction=dict(counts),
                   trampoline_bytes=cursor - arena, unhandled_count=len(plan['unhandled']),
                   unhandled_by_reason=dict(collections.Counter(x['reason'] for x in plan['unhandled'])),
-                  unhandled_by_instruction=dict(collections.Counter(x['instruction'].split(' ', 1)[0]
-                                                                        for x in plan['unhandled'])),
+                  unhandled_by_instruction=dict(collections.Counter(x['mnemonic'] for x in plan['unhandled'])),
                   coverage=plan.get('coverage', {}), semantic_risk_sites=semantic_risk,
                   partial_execution_allowed=partial,
                   span_patches=len(span_reports), span_sites=span_reports, spans_experimental=bool(span_reports),

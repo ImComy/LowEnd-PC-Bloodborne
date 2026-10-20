@@ -14,9 +14,212 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from cpu_compat import site_check  # noqa: E402
+
 EBOOT_BASE=0x400000
 # BB_FPS presets: patch names from patches/Bloodborne.xml (app version 01.09).
 FPS_PRESETS={'30':[],'60':['60 FPS++'],'90':['90 FPS++'],'uncap':['Uncap FPS++']}
+# 120 and 144 (Awakenchan/BloodBorneButPc, GPL): Kyo's current 90 FPS++ list ("90 FPS++ (rate
+# base)") with its frame-rate values for that rate. Uncap FPS++ (another design) deadlocked the
+# game's model jobs at the end of Vicar Amelia's intro; the 60/90 FPS++ design did not. The values
+# follow the rate from the game's own 30: frame times 1/fps, frame counts fps/6 and fps/3, timings
+# 3/fps, a thread's sleep 990000/fps us, the limiter's longest sleep just under a frame, and the
+# frame time the character update steps its stamina by, 1.125/fps (kept at 90's 0.0125, the
+# character ran 1.5 and 1.8 times as fast at 120 and 144).
+SCALED_FPS={'120':120,'144':144}
+SCALED_BASE='90 FPS++ (rate base)'
+SCALED_LIMITER_SLEEP={90:10000,120:8000,144:6500}  # us, the frame limiter's longest sleep
+# The base's lines whose values follow the rate: address -> [(byte position in the line, struct
+# format, value for a rate)]. Each line must hold the value for 90 there (rate_scaled checks).
+SCALED_VALUES={
+    0x0F383CA:[(0,'<f',lambda r:1/r)],                              # physics step
+    0x1CBDB42:[(6,'<f',lambda r:0.0125*90/r)],                      # stamina frame time
+    0x1929676:[(0,'<i',lambda r:r//6)],
+    0x192C405:[(0,'<i',lambda r:r//3)],
+    **{a:[(5,'<f',lambda r:1/r)] for a in (0x2434840,0x243485A,0x243487E,0x24348B3)},
+    0x25629F0:[(1,'<I',lambda r:990000//r)],                        # thread sleep, us
+    0x2C012CC:[(2,'<I',SCALED_LIMITER_SLEEP.get),(9,'<I',SCALED_LIMITER_SLEEP.get)],
+    0x4CF6420:[(i,'<f',lambda r:3/r) for i in (0,4,8,12)],
+    0x4D27FD4:[(0,'<f',lambda r:-3/r)],
+    0x4D27FE0:[(0,'<f',lambda r:3/r)],
+    0x4D29170:[(0,'<f',lambda r:1/r)],
+}
+# The 1.09 eboot's bytes at every site the base writes (patch_fingerprint of SCALED_BASE alone,
+# a hash): another build there gets no 120/144 preset (30 FPS).
+SCALED_FINGERPRINT='216bafcef13f00e358b8d8245ca3b8bccf7ad47f4ff2984295b06ed2fd776697'
+
+
+def fps_preset(fps,elf,xml,app_version):
+    """The patch names of an FPS preset; none for 120/144 on an eboot whose code at the base's
+    sites is not the 1.09 build's."""
+    if fps not in SCALED_FPS: return list(FPS_PRESETS[fps])
+    if patch_fingerprint(elf,xml,app_version,[SCALED_BASE])!=SCALED_FINGERPRINT:
+        print(f'Patches: {fps} FPS left out: this eboot.bin has other code where {SCALED_BASE} writes '
+              '(30 FPS)')
+        return []
+    return [SCALED_BASE]
+
+
+def preset_writes(xml,preset,fps,app_version,segments,elf=None,settings=None):
+    """The FPS preset's writes: for 120/144 the base with its values for that rate, then the
+    high-FPS corrections (rate_corrections)."""
+    writes=compile_patches(xml,preset,app_version,segments)
+    if not preset: return writes
+    if fps in SCALED_FPS:
+        writes=rate_scaled(writes,SCALED_FPS[fps])
+        print(f'Patches: {fps} FPS: {SCALED_BASE} with its frame-rate values for {fps}')
+    writes=rate_corrections(writes,PRESET_RATES.get(fps),elf,settings or {})
+    return frame_steps(writes,PRESET_RATES.get(fps),elf,settings or {})
+
+
+# Corrections to the community frame-rate lists (Kyo's 1.0 lists), from Awakenchan/BloodBorneButPc
+# (after bbhost's frame_rate.cpp and follow_camera.cpp, Kyo's 1.3 lists and yogesh1239's AI/Camera
+# fix). They change only sites a list writes (and the camera's own eases): the 60, 90 and uncapped
+# lists of this file write none of the effect or cloth sites, so those corrections are for the
+# 120/144 base.
+#
+# Effects keep the data's rate (effect_rate_fix=0 / BB_EFFECT_RATE_FIX=0: off). The effect
+# manager's 30.0 (0x26FB39F) and the GPU particle update's (0x4CAD7FC) turn effect data, written in
+# 30 fps frames, into seconds; the lists set both to 60, which halved each emitter's interval and
+# lifetime and ran GPU particles twice as fast (the motes rising from a lamp's travel and a
+# boss's blood rain went missing).
+EFFECT_RATE_SITES=(0x26FB39F,0x4CAD7FC)
+# The cloth above 60, as Kyo's 1.3 (cloth_fix=0 / BB_CLOTH_FIX=0: off): one substep a frame runs
+# the solver at the frame rate against the 60 its part files are tuned for, and the six
+# constraint caves scale its stiffness by the scalars at 0x4D3BD00: (60/fps)^2. The 1.0 lists
+# scale it by 60/fps and also point the damping exponent's load (0xB6FBD4) at it and scale the
+# integrator's dt*dt (a hook at 0xB73F84, its cave at 0xB73FA8, the factor at 0x4D3BD10), which 1.3
+# leaves as the game has them: the cloth jumped and ran fast at 90 and above.
+CLOTH_STIFFNESS=0x4D3BD00
+CLOTH_LEFT_OUT=((0xB6FBD4,0xB6FBD8),(0xB73F84,0xB73F8D),(0xB73FA8,0xB73FC1),(0x4D3BD10,0x4D3BD20))
+# The follow camera (ChrExFollowCam) eases by weights a frame (camera_fix=1 / BB_CAMERA_FIX=1: on;
+# off by default, as Awakenchan ships it: players found it trailing too far behind when running).
+# The lists store Kyo's 60 fps values for them at every rate - its constructor's immediates (field
+# by address below) and two runs of stores that replace its parameter reads (mov dword
+# [r13+field], value) - so at 90, 120 and 144 it chased, turned and settled 1.5, 2 and 2.4 times as
+# fast. They are converted from a 60 fps frame: a weight w to 1-(1-w)^(60/fps), the pitch return's
+# kept share k (+0x1a8) to k^(60/fps); the direct pitch angle (+0x238) is an angle. Three weights no
+# list tunes are the game's own for a 30 fps frame, converted from it at every rate: the
+# LockCamParam blend (+0x330, an immediate no list writes), the distance ease (0x4D25E68, 0.1) and
+# the chase-rate ease (0x4D25E94, 1/30).
+CAMERA_FIELDS={0x183a4c3:0x19c,0x183a4cd:0x1a0,0x183a4d7:0x1a4,0x183a4e1:0x1a8,0x183a4f5:0x1b0,
+               0x183a4ff:0x1b4,0x183a509:0x1b8,0x183a527:0x1c4,0x183a531:0x1c8,0x183a53b:0x1cc,
+               0x183a649:0x238,0x183a653:0x23c,0x183a65d:0x240,0x183a8c1:0x19c,0x183a8cb:0x1a0,
+               0x183a8d5:0x1a4,0x183a8df:0x1a8,0x183a8f3:0x1b0,0x183a8fd:0x1b4,0x183a907:0x1b8,
+               0x183a925:0x1c4,0x183a92f:0x1c8,0x183a939:0x1cc,0x183aa47:0x238,0x183aa51:0x23c,
+               0x183aa5b:0x240}
+CAMERA_STORES=((0x183FF29,0x183FF6B),(0x1840799,0x18407E6))
+CAMERA_STORE=bytes.fromhex('41c785')  # the lists' mov dword [r13+disp32], imm32
+CAMERA_ANGLE,CAMERA_KEPT=0x238,0x1a8
+# The game's own value at each of these (a float the eboot must hold there, else left alone).
+CAMERA_EASES={0x4D25E68:0.1,0x4D25E94:1/30,0x183A7DE:0.05}  # the last: mov dword [rbx+0x330], 0.05
+PRESET_RATES={'60':60,'90':90,**SCALED_FPS}  # uncapped: the rate is not known here
+
+
+# Fixed time steps (frame_step_fix=0 / BB_FRAME_STEP_FIX=0: off). The game advances physics,
+# falling objects and other systems by a fixed step a frame, 1/30 s. The 60 FPS++ list halves
+# them to 1/60 and the 90 FPS++ lists keep that 1/60 (78 sites in the rate base, 95 in the older
+# 90 FPS++), so above 60 FPS they ran fps/60 times as fast: gravity 1.5x at 90, 2x at 120, 2.4x
+# at 144. Each 4-byte line that writes 1/60 where the eboot has the game's 1/30 gets 1/fps.
+# Awakenchan/BloodBorneButPc 0.9.32 beta 6 made the same change (released without source); these
+# sites are found again from the lists and the eboot, not taken from that build.
+FRAME_STEP_GAME=struct.pack('<f',1/30)
+FRAME_STEP_LIST=struct.pack('<f',1/60)
+
+
+def frame_steps(writes, fps, elf, settings):
+    """The preset's writes with its fixed 1/60 steps at 1/fps, above 60 FPS."""
+    if not fps or fps<=60 or elf is None or not setting_on(settings,'frame_step_fix','BB_FRAME_STEP_FIX','1'):
+        return writes
+    step=struct.pack('<f',1/fps)
+    out=[]
+    count=0
+    for offset,data in writes:
+        if data==FRAME_STEP_LIST and eboot_bytes(elf,offset,offset+4)==FRAME_STEP_GAME:
+            data=step
+            count+=1
+        out.append((offset,data))
+    print(f'Patches: {count} fixed frame steps at 1/{fps} s (frame_step_fix=0: 1/60)')
+    return out
+
+
+def setting_on(settings,key,env,default):
+    return os.environ.get(env,settings.get(key,default))!='0'
+
+
+def camera_value(field, value, frames):
+    """A camera field's value for a frame `frames` of the frames it was tuned for."""
+    if field==CAMERA_ANGLE or not 0<value<1: return value
+    return value**frames if field==CAMERA_KEPT else 1-(1-value)**frames
+
+
+def rate_corrections(writes, fps, elf, settings):
+    """The preset's writes with the corrections above for `fps` (None: uncapped; only the
+    effects' rate is put back)."""
+    f=lambda v: struct.pack('<f',v)
+    effects=setting_on(settings,'effect_rate_fix','BB_EFFECT_RATE_FIX','1')
+    cloth=bool(fps and fps>60 and setting_on(settings,'cloth_fix','BB_CLOTH_FIX','1'))
+    camera=bool(fps and setting_on(settings,'camera_fix','BB_CAMERA_FIX','0'))
+    out=[]
+    eases=set()
+    for offset,data in writes:
+        a=offset+EBOOT_BASE
+        if effects and a in EFFECT_RATE_SITES and len(data)==4:
+            continue
+        if cloth:
+            left=next(((lo,hi) for lo,hi in CLOTH_LEFT_OUT if lo<=a<hi),None)
+            if left:
+                if a+len(data)>left[1]: raise ValueError(f'frame-rate patch: {a:#x} reaches past {left[1]:#x}')
+                continue
+            if a==CLOTH_STIFFNESS:
+                values=struct.unpack('<4f',data) if len(data)==16 else ()
+                if len(set(values))!=1 or not 0<values[0]<=1:
+                    raise ValueError(f'frame-rate patch: unexpected cloth stiffness at {a:#x}')
+                data=f((60/fps)**2)*4
+        if camera:
+            if a in CAMERA_FIELDS and len(data)==4:
+                data=f(camera_value(CAMERA_FIELDS[a],struct.unpack('<f',data)[0],60/fps))
+            elif any(lo<=a<hi for lo,hi in CAMERA_STORES) and len(data)==11 and data[:3]==CAMERA_STORE:
+                field,value=struct.unpack('<If',data[3:])
+                data=data[:7]+f(camera_value(field,value,60/fps))
+            elif a in CAMERA_EASES and len(data)==4:
+                data=f(camera_value(None,CAMERA_EASES[a],30/fps))
+                eases.add(a)
+        out.append((offset,data))
+    if camera and elf is not None:
+        # The eases no line of the list writes, where the eboot holds the game's value.
+        for a,value in CAMERA_EASES.items():
+            if a in eases: continue
+            at=a-EBOOT_BASE
+            if eboot_bytes(elf,at,at+4)==f(value):
+                out.append((at,f(camera_value(None,value,30/fps))))
+            else:
+                print(f'Patches: camera ease at {a:#x} left alone (unexpected code)')
+    names=[n for n,on in (('effect rate',effects),('cloth',cloth),('camera',camera)) if on]
+    print(f'Patches: frame-rate corrections: {", ".join(names) or "none"}')
+    return out
+
+
+def rate_scaled(writes, fps):
+    """The base's writes with their frame-rate values for `fps`; ValueError if a line is not the
+    90 FPS value the table expects (another list under that name)."""
+    out,seen=[],set()
+    for offset,data in writes:
+        fields=SCALED_VALUES.get(offset+EBOOT_BASE)
+        if fields:
+            data=bytearray(data)
+            for at,fmt,value in fields:
+                size=struct.calcsize(fmt)
+                if at+size>len(data) or bytes(data[at:at+size])!=struct.pack(fmt,value(90)):
+                    raise ValueError(f'{SCALED_BASE}: unexpected value at {offset+EBOOT_BASE:#x}')
+                data[at:at+size]=struct.pack(fmt,value(fps))
+            data=bytes(data)
+            seen.add(offset+EBOOT_BASE)
+        out.append((offset,data))
+    missing=set(SCALED_VALUES)-seen
+    if missing: raise ValueError(f'{SCALED_BASE}: no write at {", ".join(hex(a) for a in sorted(missing))}')
+    return out
 # Fixes applied with every preset. The game's two per-frame render heaps (256 KiB each,
 # mov edx,0x40000 at guest offsets 0x2195c09/0x2195c46) run out in a busy frame; the pool at
 # 0xe45560 then returns NULL and the caller copies into it (memcpy at guest offset 0x21d5b40).
@@ -63,6 +266,8 @@ EFFECTS={
     'tweak_no_camera_rotation':(None,'Disable Camera Auto Rotation via Movement'),
     'tweak_easy_run':(None,'Sensitive Analog Input (easier to run)'),
     'tweak_ragdoll':(None,'DS1-like physics'),
+    # parsifal295, Supermedo/bloodborne_pc PR #17.
+    'tweak_circle_confirm':(None,'Circle Confirm (Japanese/Asian button layout)'),
 }
 # model_lod: -2 highest, 0 the game's, 1 lower, 2 lowest.
 MODEL_LOD={'-2':'Model LOD -2 (Highest)','1':'Model LOD 1 (Lower)','2':'Model LOD 2 (Lowest)'}
@@ -261,8 +466,8 @@ def resolution_writes(xml,size,app_version,segments,ui=OUTPUT_SIZE):
 # divides the moved distance by the frame time (dt, local -0x74(%rbp)) instead: "blocked" is
 # then below 1 m/s at any frame rate. Off with sprint_fix=0 in bbport.ini or BB_SPRINT_FIX=0.
 FRAME_RATE_FIXES=[
-    # (vaddr, original bytes, replacement)
-    (0x1514c24,bytes.fromhex('c5fa590500174103'),bytes.fromhex('c5fa5e458c0f1f00')),  # vdivss -0x74(%rbp),%xmm0; nop
+    # (vaddr, (length, site_check of the original vmulss), replacement)
+    (0x1514c24,(8,'d84fc9844600213c'),bytes.fromhex('c5fa5e458c0f1f00')),  # vdivss -0x74(%rbp),%xmm0; nop
 ]
 
 
@@ -280,7 +485,7 @@ def frame_rate_fixes(elf):
     writes=[]
     for vaddr,original,new in FRAME_RATE_FIXES:
         at=next((offset+vaddr-start for start,offset,filesz in loads if start<=vaddr<start+filesz),None)
-        if at is None or elf[at:at+len(original)]!=original:
+        if at is None or site_check(elf[at:at+original[0]])!=original[1]:
             print(f'Patches: frame-rate fix at {vaddr:#x} skipped (unexpected code)')
             continue
         writes.append((vaddr,new))
@@ -319,7 +524,7 @@ def eboot_bytes(elf,start,end):
 # step at 0x00F383CA); both were checked on the same clean eboot (sha256 d65f0b4f...).
 BUILTIN_XML=Path(__file__).resolve().parent.parent/'patches/Bloodborne.xml'
 FINGERPRINT_PATCHES=sorted({n for names in FPS_PRESETS.values() for n in names}|{RESOLUTION_TEMPLATE})
-PATCH_FINGERPRINTS={'01.09':'f1322113eac92470b28f1cb3ccd7479b27f3daf7a9a31a6107f1fa14c8d94f14'}
+PATCH_FINGERPRINTS={'01.09':'0c970cb2522ee7882ce59fec1b85715942873b82dd8e458b5c6a44bf7c09c116'}
 
 
 def patch_sites(xml,app_version,names=FINGERPRINT_PATCHES):
@@ -337,9 +542,9 @@ def patch_sites(xml,app_version,names=FINGERPRINT_PATCHES):
     return merged
 
 
-def patch_fingerprint(elf,xml=BUILTIN_XML,app_version='01.09'):
+def patch_fingerprint(elf,xml=BUILTIN_XML,app_version='01.09',names=FINGERPRINT_PATCHES):
     digest=hashlib.sha256()
-    for start,end in patch_sites(xml,app_version):
+    for start,end in patch_sites(xml,app_version,names):
         digest.update(struct.pack('<QQ',start,end)+eboot_bytes(elf,start,end))
     return digest.hexdigest()
 
@@ -364,20 +569,48 @@ def encode(line):
 
 # Patches that replace code which the fingerprint above does not cover: the bytes they overwrite,
 # as the 1.09 build has them (eboot offset, hex). Another build there gets the patch left out.
+# name: (offset, length, site_check of the code the patch expects there)
 PATCH_GUARDS={
-    'Skip Online/Offline Choice':(0x1b39030,'554889e54157415641554154534881ec48130000'),
+    'Skip Online/Offline Choice':(0x1b39030,20,'2ba50af621aa1f80'),
 }
+# The same, by length and hash (sha256 prefix) of the code they expect, so no game bytes are kept:
+# name -> (eboot offset, length, check).
+HASH_GUARDS={
+    'Circle Confirm (Japanese/Asian button layout)':(0x1fb8730,6,'f909b8f17e0b6494'),
+}
+
+
+# The game's graphics heaps at PC sizes (auser1337's "Increased Graphics Heap Sizes"; with the
+# larger direct memory pool, BB_DMEM_MB 9152, which run.py sets with it). The PS4's sizes left models
+# missing with the highest model detail or screen-space reflections (ladders, ground, the Astral
+# Clocktower's clock). Awakenchan/BloodBorneButPc 0.9.32 gives every player and setting these
+# sizes; before, the port applied them for scenes above 1080p only. pc_heaps=0 in bbport.ini or
+# BB_PC_HEAPS=0: that again. The guard: (offset, length, sha256 prefix of the 1.09 build's bytes
+# over both of the patch's writes).
+HEAP_PATCH='Increased Graphics Heap Sizes'
+HEAP_GUARD=(0x04b36dda-EBOOT_BASE,10,'2655d1cb82ac9da1')
+
+
+def pc_heaps_enabled(settings):
+    return setting_on(settings,'pc_heaps','BB_PC_HEAPS','1')
+
+
+def site_matches(elf,guard):
+    offset,length,check=guard
+    return hashlib.sha256(eboot_bytes(elf,offset,offset+length)).hexdigest()[:16]==check
 
 
 def guarded_patches(names,elf):
     """`names` without the guarded patches whose site in eboot.elf is not the code they expect."""
     kept=[]
     for name in names:
+        if name in HASH_GUARDS and not site_matches(elf,HASH_GUARDS[name]):
+            print(f'Patches: {name} left out: this eboot.bin has other code at its address')
+            continue
         guard=PATCH_GUARDS.get(name)
         if guard:
-            offset,expected=guard
-            expected=bytes.fromhex(expected)
-            if eboot_bytes(elf,offset,offset+len(expected))!=expected:
+            offset,length,expected=guard
+            if site_check(eboot_bytes(elf,offset,offset+length))!=expected:
                 print(f'Patches: {name} left out: this eboot.bin has other code at its address')
                 continue
         kept.append(name)
@@ -399,7 +632,7 @@ def compile_patches(xml, names, app_version, segments):
             # 0x011383ca lies inside an unrelated multi-byte NOP;
             # the intended float immediate is at 0x00f383ca in this build (1/30 in the game).
             # The values in patches/Bloodborne.xml for these presets are shadPS4's maintained
-            # ones (upstream be1cde3): 1/30 at 60 FPS, 1/90 at 90, 1/120 uncapped.
+            # ones (upstream be1cde3): 1/90 at 90, 1/120 uncapped; 60 FPS keeps the game's 1/30.
             if (app_version == '01.09' and name in ('60 FPS++', '90 FPS++', 'Uncap FPS++')
                     and offset == 0x011383ca-EBOOT_BASE):
                 offset = 0x00f383ca-EBOOT_BASE
@@ -424,6 +657,14 @@ def external_patches(directory, app_version='01.09', exclude=Path(__file__).reso
     directory=Path(directory)
     for path in sorted(directory.glob('*.xml')) if directory.is_dir() else []:
         if path.resolve()==Path(exclude).resolve(): continue  # the built-in file (patches/ in a checkout)
+        # Copies of the built-in file in the data folder's patches/ (an older package's, or the
+        # shadPS4 file of that name): their isEnabled frame-rate patches went on top of the
+        # port's own (Uncap FPS++ over 90 FPS++). After Awakenchan/BloodBorneButPc.
+        # external_bloodborne_xml=1 in bbport.ini or BB_EXTERNAL_BLOODBORNE_XML=1 reads them.
+        if path.name.lower()==Path(exclude).name.lower() and not external_copy_allowed():
+            print(f'Patches: {path} ignored: a copy of the built-in patch file '
+                  '(BB_EXTERNAL_BLOODBORNE_XML=1 reads it)',file=sys.stderr)
+            continue
         # Left by bbbridge's app (Supermedo's builds): play logs every 5 s to The Hunter's Dream.
         if path.name.lower()=='bbbridge-live-map.xml': continue
         try:
@@ -437,6 +678,14 @@ def external_patches(directory, app_version='01.09', exclude=Path(__file__).reso
             if meta.get('AppVer')==app_version and meta.get('AppElf','eboot.bin')=='eboot.bin':
                 found.append((f'{path.name}/{meta.get("Name")}',path,meta))
     return found
+
+
+def external_copy_allowed():
+    value=os.environ.get('BB_EXTERNAL_BLOODBORNE_XML')
+    if value is None:
+        config=os.environ.get('BB_CONFIG')
+        value=read_settings(config).get('external_bloodborne_xml','0') if config else '0'
+    return value=='1'
 
 
 def external_selection(found, config):
@@ -470,12 +719,31 @@ def compile_external(selected, segments):
     return writes
 
 
+def with_external(writes, preset_count, selected, segments):
+    """`writes` (the FPS preset's first, `preset_count` of them) and the selected external
+    patches' after them, and the key of an external patch that replaced the preset, if any. An FPS
+    patch of its own (e.g. "60FPS (no deltatime)", at 60 FPS++'s addresses with other values)
+    replaces the built-in preset whole: applied over it, the two mixed. From ethan (emurphy04),
+    Supermedo/bloodborne_pc PR #93 (8042500)."""
+    preset_ranges=[(offset,offset+len(data)) for offset,data in writes[:preset_count]]
+    external=[]
+    replaced=None
+    for item in selected:
+        ours=compile_external([item],segments)
+        if not replaced and preset_count and any(start<offset+len(data) and offset<end
+                                                 for offset,data in ours for start,end in preset_ranges):
+            writes=writes[preset_count:]
+            replaced=item[0]
+        external+=ours
+    return writes+external,replaced
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--patches-dir',type=Path,help='third-party patch XML files (shadPS4 format)')
     p.add_argument('--patches-config',type=Path,help='patches.json: enabled/disabled external patches')
     p.add_argument('--xml',type=Path,default=Path(__file__).resolve().parent.parent/'patches/Bloodborne.xml')
-    p.add_argument('--fps',choices=sorted(FPS_PRESETS),default='uncap')
+    p.add_argument('--fps',choices=sorted(FPS_PRESETS)+sorted(SCALED_FPS),default='uncap')
     p.add_argument('--extra',default='',help='additional patch names, separated by ";"')
     p.add_argument('--app-version',default='01.09')
     p.add_argument('--out',type=Path,default=Path(__file__).resolve().parent.parent/'out')
@@ -519,13 +787,16 @@ def main():
         print(f'Patches: eboot.bin is not the {a.app_version} build the patches were made for: none '
               'applied (30 FPS, no effect or resolution patches; BB_FORCE_PATCHES=1 applies them)')
         return
-    names=FPS_PRESETS[a.fps]+FIXES+[n.strip() for n in a.extra.split(';') if n.strip()]
+    elf=(a.out/'eboot.elf').read_bytes()
+    preset=fps_preset(a.fps,elf,a.xml,a.app_version)
+    names=preset+FIXES+[n.strip() for n in a.extra.split(';') if n.strip()]
     names+=[n for n in effect_patches(read_settings(a.settings)) if n not in names]
     validate_patch_requirements(names,a.game_dir)
-    elf=(a.out/'eboot.elf').read_bytes()
     names=guarded_patches(names,elf)
     segments=eboot_segments(elf)
-    writes=compile_patches(a.xml,names,a.app_version,segments)
+    writes=preset_writes(a.xml,preset,a.fps,a.app_version,segments,elf,read_settings(a.settings))
+    preset_count=len(writes)  # the first writes, replaced whole by an external FPS patch
+    writes+=compile_patches(a.xml,[n for n in names if n not in preset],a.app_version,segments)
     if a.fps!='30' and sprint_fix_enabled(read_settings(a.settings)):
         fixes=frame_rate_fixes(elf)
         writes+=fixes
@@ -545,15 +816,20 @@ def main():
         if ultrawide(out):
             writes+=ultrawide_writes(a.xml,out,a.app_version,segments)
             names.append(f'ultrawide {out[0]}x{out[1]} (HUD {ui[0]}x{ui[1]})')
-        if size[0]*size[1]>OUTPUT_SIZE[0]*OUTPUT_SIZE[1]:
-            heap='Increased Graphics Heap Sizes'
-            writes+=compile_patches(a.xml,[heap],a.app_version,segments)
-            names.append(heap)
         print(f'Patches: scene {size[0]}x{size[1]}; UI {ui[0]}x{ui[1]}')
+    if size and size[0]*size[1]>OUTPUT_SIZE[0]*OUTPUT_SIZE[1] or pc_heaps_enabled(read_settings(a.settings)):
+        if site_matches(elf,HEAP_GUARD):
+            writes+=compile_patches(a.xml,[HEAP_PATCH],a.app_version,segments)
+            names.append(HEAP_PATCH)
+        else:
+            print(f'Patches: {HEAP_PATCH} left out: this eboot.bin has other code at its address')
     if a.patches_dir:
         # After the built-in ones: an external patch of the same bytes wins.
-        writes+=compile_external(external_selection(external_patches(a.patches_dir,a.app_version,a.xml),
-                                                    a.patches_config),segments)
+        selected=external_selection(external_patches(a.patches_dir,a.app_version,a.xml),a.patches_config)
+        writes,replaced=with_external(writes,preset_count,selected,segments)
+        if replaced:
+            print(f'Patches: external {replaced} replaces the built-in {", ".join(preset)}')
+            names=[n for n in names if n not in preset]
     # BBPATCH2: the patch base, so the loader can rebase pointers the patches write into
     # relocated slots (60/90 FPS++ replace function pointers).
     blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,len(writes))

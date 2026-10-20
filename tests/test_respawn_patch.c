@@ -5,19 +5,14 @@
 #include <string.h>
 #include <windows.h>
 #include "respawn_patch.h"
+#include "game_code.h"
 
 static size_t image_size = 0x49280cc, init_at = 0x1938b59, patch_at = 0x1938b64;
 static size_t ready_at = 0x193a581, twelve_at = 0x49280c8;
-static const unsigned char init[] = {
-    0x41,0x80,0xbc,0x24,0xe4,0,0,0,0,0x74,0x0a,
-    0xc5,0xfa,0x10,0x05,0x5c,0xf5,0xfe,0x02,0xeb,0x04,0xc5,0xf8,0x57,0xc0,
-    0xc4,0xc1,0x7a,0x11,0x84,0x24,0x78,0x02,0,0,
-    0x41,0xc7,0x84,0x24,0x7c,0x02,0,0,0,0,0x70,0x41
-};
-static const unsigned char ready[] = {
-    0xc5,0xf8,0x2e,0xca,0x0f,0x87,0x53,0x06,0,0,
-    0x45,0x84,0xff,0x0f,0x84,0x4a,0x06,0,0
-};
+/* The loading step's instructions, read from the player's game (game_code.h) at the first
+ * layout's offsets: `init` 47 bytes, `ready` 19. */
+enum { GAME_INIT_AT = 0x1938b59, GAME_READY_AT = 0x193a581, INIT_N = 47, READY_N = 19 };
+static unsigned char init[INIT_N], ready[READY_N];
 
 /* Run the original guest instructions with a Windows ABI adapter. Only the
  * original RIP-relative constant is relocated into this executable allocation.
@@ -27,13 +22,13 @@ static void check_initialization(const unsigned char *image, float death_delay) 
     assert(code);
     const unsigned char prologue[] = {0x41,0x54,0x49,0x89,0xcc}; /* push r12; mov r12,rcx */
     memcpy(code, prologue, sizeof(prologue));
-    memcpy(code + sizeof(prologue), image + init_at, sizeof(init));
+    memcpy(code + sizeof(prologue), image + init_at, INIT_N);
     if (image[patch_at + 1] == 0xfa) {
         int32_t displacement = (int32_t)(128 - (sizeof(prologue) + 19));
         memcpy(code + sizeof(prologue) + 15, &displacement, 4);
     }
     const unsigned char epilogue[] = {0x41,0x5c,0xc3}; /* pop r12; ret */
-    memcpy(code + sizeof(prologue) + sizeof(init), epilogue, sizeof(epilogue));
+    memcpy(code + sizeof(prologue) + INIT_N, epilogue, sizeof(epilogue));
     memcpy(code + 128, image + twelve_at, 4);
     DWORD old;
     assert(VirtualProtect(code, 4096, PAGE_EXECUTE_READ, &old));
@@ -67,8 +62,8 @@ static void check_readiness(const unsigned char *image) {
     const unsigned char allow[] = {0xb8,1,0,0,0,0x41,0x5f,0xc3};
     const unsigned char wait[] = {0x31,0xc0,0x41,0x5f,0xc3};
     memcpy(code, prologue, sizeof(prologue));
-    memcpy(code + sizeof(prologue), image + ready_at, sizeof(ready));
-    memcpy(code + sizeof(prologue) + sizeof(ready), allow, sizeof(allow));
+    memcpy(code + sizeof(prologue), image + ready_at, READY_N);
+    memcpy(code + sizeof(prologue) + READY_N, allow, sizeof(allow));
     memcpy(code + sizeof(prologue) + 0x65d, wait, sizeof(wait));
     DWORD old;
     assert(VirtualProtect(code, 4096, PAGE_EXECUTE_READ, &old));
@@ -93,21 +88,27 @@ int main(int argc, char **argv) {
         twelve_at = 0x507f3c8;
         image_size = twelve_at + 4;
     }
+    if (!(argc == 3 && !strcmp(argv[1], "--image"))) {
+        bb_test_require_game("respawn patch");
+        assert(bb_test_game_code(GAME_INIT_AT, init, INIT_N) && bb_test_game_code(GAME_READY_AT, ready, READY_N));
+    }
     unsigned char *image = calloc(1, image_size);
     assert(image);
     if (argc == 3 && !strcmp(argv[1], "--image")) {
         FILE *f = fopen(argv[2], "rb");
         assert(f && fread(image, 1, image_size, f) == image_size);
         fclose(f);
+        memcpy(init, image + init_at, INIT_N);
+        memcpy(ready, image + ready_at, READY_N);
     } else {
         assert(argc == 1 || (argc == 2 && !strcmp(argv[1], "--shifted-fixture")));
-        memcpy(image + init_at, init, sizeof(init));
-        memcpy(image + ready_at, ready, sizeof(ready));
+        memcpy(image + init_at, init, INIT_N);
+        memcpy(image + ready_at, ready, READY_N);
         const float twelve = 12.0f;
         memcpy(image + twelve_at, &twelve, 4);
     }
-    assert(!memcmp(image + init_at, init, sizeof(init)));
-    assert(!memcmp(image + ready_at, ready, sizeof(ready)));
+    assert(!memcmp(image + init_at, init, INIT_N));
+    assert(!memcmp(image + ready_at, ready, READY_N));
     check_initialization(image, 12.0f);
     check_readiness(image);
     assert(bb_patch_respawn_delay(NULL, image_size) == BB_RESPAWN_UNSUPPORTED);
@@ -115,7 +116,7 @@ int main(int argc, char **argv) {
         assert(bb_patch_respawn_delay(image, short_size) == BB_RESPAWN_UNSUPPORTED);
     assert(bb_patch_respawn_delay(image, image_size - 1) == BB_RESPAWN_UNSUPPORTED);
     const struct { size_t at, size; } guards[] = {
-        {init_at, sizeof(init)}, {ready_at, sizeof(ready)}, {twelve_at, 4}
+        {init_at, INIT_N}, {ready_at, READY_N}, {twelve_at, 4}
     };
     for (size_t g = 0; g < sizeof(guards) / sizeof(*guards); ++g) {
         for (size_t i = 0; i < guards[g].size; ++i) {
@@ -123,7 +124,7 @@ int main(int argc, char **argv) {
             *at ^= 1;
             assert(bb_patch_respawn_delay(image, image_size) == BB_RESPAWN_UNSUPPORTED);
             *at ^= 1;
-            assert(!memcmp(image + init_at, init, sizeof(init)));
+            assert(!memcmp(image + init_at, init, INIT_N));
         }
     }
     unsigned char *before = malloc(image_size);

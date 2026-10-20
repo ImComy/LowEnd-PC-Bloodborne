@@ -928,9 +928,9 @@ void ModsTab() {
         "Choose button prompts and gameplay patches, then restart to apply them.");
     if (const char* enabled = std::getenv("BB_MODS_ENABLED"); enabled && std::strcmp(enabled,"0") == 0)
         Note("Mod loading is off in the launcher. Turn it on there first.", Ink::Warn);
-    // 0 the game's PlayStation buttons, 1 the Xbox prompt mod, 2 the keyboard key images the
-    // port ships (PCBButtons, put in the mods folder switched off; run.py reads the choice again
-    // at every start).
+    // 0 the game's PlayStation buttons, 1 the Xbox prompt mod, 2 the keyboard key images
+    // (PCBButtons). Both mods are the player's own Nexus downloads, which the launcher adds to the
+    // mods folder; run.py reads the choice again at every start.
     Section("Button prompts");
     static const auto xbox_folder = XboxPromptFolder();
     static const std::optional<std::string> keyboard_folder = [] () -> std::optional<std::string> {
@@ -964,9 +964,9 @@ void ModsTab() {
         } else mod_selection_error = "Could not save mods.json. Check the port folder permissions.";
     }
     if (!xbox_folder)
-        Note("Xbox buttons need the Xbox prompt mod in the launcher's mods folder.", Ink::Faint);
+        Note("Xbox buttons are a Nexus Mods download (Bloodborne mod 30): choose Xbox in the launcher's Controls page to add it.", Ink::Faint);
     if (!keyboard_folder)
-        Note("Keyboard keys are added to the mods folder the next time the game starts.", Ink::Faint);
+        Note("Keyboard keys are a Nexus Mods download (PCBButtons, Bloodborne mod 460): choose Keyboard in the launcher's Controls page to add it.", Ink::Faint);
     if (!mod_selection_error.empty())
         Note(mod_selection_error.c_str(), Ink::Accent);
     if (!native) Section("Gameplay and debug");

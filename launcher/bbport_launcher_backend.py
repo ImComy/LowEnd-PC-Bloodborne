@@ -82,6 +82,10 @@ FIELDS = {
         row('frame_cap', 'Unlocked mode limit', 'choice', core.FRAME_CAPS),
         row('frames_ahead', 'Frames ahead', 'choice', core.FRAMES_AHEAD),
         row('fullscreen', 'Fullscreen', 'toggle'),
+        row('fullscreen_mode', 'Fullscreen type', 'choice', core.FULLSCREEN_MODES,
+            'Exclusive switches the display to its own mode: notifications and other windows do not show over the game.'),
+        row('display', 'Monitor', 'choice', core.DISPLAYS,
+            'The monitor the game window and fullscreen go to, in the order the game log lists them.'),
         row('present_mode', 'Presentation mode', 'choice', core.PRESENT_MODES),
         row('hdr', 'HDR output', 'toggle'),
     ],
@@ -90,6 +94,8 @@ FIELDS = {
         row('user_dir', 'Saves folder', 'folder'),
         row('dlc_dir', 'DLC folder (base-game dumps only, e.g. SPEXPANSIONDLC03)', 'folder'),
         row('language', 'Game language', 'choice', core.LANGUAGES),
+        row('voice_language', 'Voice language', 'choice', core.VOICE_LANGUAGES,
+            'As in the game uses the original voice setting; other choices use available tracks.'),
         row('player_name', 'Hunter name'),
         *[row(key, title[0], 'toggle') for key, title, _ in core.EXTRAS[:1]],
     ],
@@ -149,7 +155,7 @@ FIELDS = {
 # field definitions remain the single source for control types and options.
 SETTINGS_SECTIONS = {
     'Visuals': [
-        ('Display & frame rate', ['output_res', 'hud_position', 'fullscreen', 'hdr', 'fps_mode', 'frame_cap',
+        ('Display & frame rate', ['output_res', 'hud_position', 'fullscreen', 'fullscreen_mode', 'display', 'hdr', 'fps_mode', 'frame_cap',
                                   'frames_ahead', 'present_mode']),
         ('Upscaling', ['upscaler', 'preset', 'live_resolution', 'sharpen', 'sharpness',
                        'object_motion']),
@@ -166,7 +172,7 @@ SETTINGS_SECTIONS = {
     'Game & Saves': [
         ('Game files', ['game_dir', 'dlc_dir']),
         ('Your data', ['user_dir']),
-        ('In-game preferences', ['language', 'player_name'] + [key for key, _, _ in core.EXTRAS[:1]]),
+        ('In-game preferences', ['language', 'voice_language', 'player_name'] + [key for key, _, _ in core.EXTRAS[:1]]),
     ],
     # Online is The Hunter's Dream only; how PLAY starts the game is chosen on the Home page.
     'Online': [
@@ -245,7 +251,7 @@ class LauncherBackend(QObject):
 
     def __init__(self, route=None):
         super().__init__()
-        self.app = {**core.APP_DEFAULTS, **core.load_json(core.CONFIG_FILE, {})}
+        self.app = core.app_settings(core.load_json(core.CONFIG_FILE, {}))
         for signal in (self.changed, self.coopChanged, self.thdChanged):
             signal.connect(self.playModeChanged)
         self._route = dict(route or LAUNCHER_ROUTE)
@@ -390,12 +396,12 @@ class LauncherBackend(QObject):
     @Property(str, notify=changed)
     def setupSummary(self):
         return (f"{self.ini.get('output_res', '1920x1080').replace('x', ' × ')}  ·  "
-                f"{self.app.get('fps_mode', 'uncap').upper()} FPS  ·  "
+                f"{self.app.get('fps_mode', '120').upper()} FPS  ·  "
                 f"{self.ini.get('upscaler', 'dlss').upper()}")
 
     @Property('QVariantMap', notify=changed)
     def setupFacts(self):
-        fps = str(self.app.get('fps_mode', 'uncap'))
+        fps = str(self.app.get('fps_mode', '120'))
         return {
             'resolution': self.ini.get('output_res', '1920x1080').replace('x', ' × '),
             'frameRate': 'Unlocked' if fps == 'uncap' else f'{fps} FPS',
@@ -944,26 +950,41 @@ class LauncherBackend(QObject):
     def _mods_dir(self):
         return Path(self.app.get('mods_dir') or core.DATA_DIR / 'mods')
 
+    def _choose_prompt_download(self, choice):
+        """The player's own download of a prompt pack: opens its Nexus page, then asks for the
+        file. '' when cancelled."""
+        _, page, title, creator = core.PROMPT_PACKS[choice]
+        webbrowser.open(page)
+        source, _ = QFileDialog.getOpenFileName(
+            None, f'Choose your {title} download (by {creator}, opened on Nexus Mods)',
+            str(Path.home() / 'Downloads'), 'Prompt mod download (*.zip *.7z *.rar common.tpf.dcx);;All files (*)')
+        return source
+
     @Slot(str)
     def setPrompt(self, choice):
-        """Xbox and Keyboard: prompt images the port ships (Dommo's Xbox prompts; JinkiJinn's
-        PCBButtons key images, copied into the mods folder the first time, with the keys those
-        images show bound in bbport.ini). PlayStation: the game's own."""
+        """Xbox and Keyboard: prompt images from Nexus Mods (Dommo's Xbox prompts; JinkiJinn's
+        PCBButtons key images, with the keys those images show bound in bbport.ini). The port does
+        not ship them: the first time, the player's own download is added to the mods folder
+        (core.install_prompt_pack). PlayStation: the game's own."""
         if choice not in ('Xbox', 'PlayStation', 'Keyboard'):
             return
         names = [m['name'] for m in self._mods if self._is_prompt_mod(m['name'])]
         xbox = [n for n in names if n != core.KEYBOARD_PROMPTS]
-        if choice == 'Xbox' and not xbox:
-            self._set_notice('The Xbox prompts are missing from the mods folder. Download the latest release.')
-            return
-        if choice == 'Keyboard' and core.KEYBOARD_PROMPTS not in names:
+        if (choice == 'Xbox' and not xbox) or (choice == 'Keyboard' and core.KEYBOARD_PROMPTS not in names):
+            _, page, title, creator = core.PROMPT_PACKS[choice]
+            source = self._choose_prompt_download(choice)
+            if not source:
+                self._set_notice(f'{choice} prompts are a separate download: get {title} by {creator} from '
+                                 f'{page}, then choose {choice} again and pick the downloaded file.')
+                return
             try:
-                core.install_keyboard_prompts(self._mods_dir())
+                core.install_prompt_pack(choice, source, self._mods_dir())
             except (OSError, ValueError) as error:
                 self._set_notice(str(error))
                 return
             self.refresh_addons()
             names = [m['name'] for m in self._mods if self._is_prompt_mod(m['name'])]
+            xbox = [n for n in names if n != core.KEYBOARD_PROMPTS]
         profile_file = core.DATA_DIR / 'mods.json'
         profile_file.parent.mkdir(parents=True, exist_ok=True)
         profile = core.load_json(profile_file, {})

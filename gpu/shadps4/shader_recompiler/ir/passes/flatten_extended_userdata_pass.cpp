@@ -6,6 +6,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <boost/container/flat_map.hpp>
 #include <queue>
 #include <xbyak/xbyak.h>
@@ -55,6 +56,20 @@ static void RegisterSrtWalkerFaultHandler() {
     });
 }
 
+// bbport: BB_SRT_SKIP_DRAW=0 brings back shadPS4's behaviour (patch the faulting load to read 0
+// for good). Awakenchan/BloodBorneButPc 0.9.32 found that patching was behind the "device lost"
+// at Ebrietas' half health: the walker then handed zeroed buffer addresses to every later draw
+// with that shader, and the patched code was saved in the pipeline cache (Jgamrot issues #50, #47).
+static bool SrtSkipDraw() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_SRT_SKIP_DRAW");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return on;
+}
+
+static thread_local bool g_srt_walk_faulted = false;
+
 namespace Shader {
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
@@ -63,6 +78,33 @@ PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
     g_srt_codegen.db(ptr, size);
     g_srt_codegen.ready();
     return func_addr;
+}
+
+bool RunSrtWalker(PFN_SrtWalker walker, const u32* user_data, u32* flat_dst) {
+    // A walk ahead of the GPU thread already has its recovery point; its fault goes there.
+    if (runtime_fault_recover || !SrtSkipDraw()) {
+        walker(user_data, flat_dst);
+        return true;
+    }
+    sigjmp_buf recover;
+    if (sigsetjmp(recover, 0)) {
+        runtime_fault_recover = nullptr;
+        g_srt_walk_faulted = true;
+        static std::atomic<u32> reports{0};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 32) {
+            LOG_WARNING(Render_Recompiler,
+                        "SRT walker read an unmapped resource table: this draw is skipped");
+        }
+        return false;
+    }
+    runtime_fault_recover = &recover;
+    walker(user_data, flat_dst);
+    runtime_fault_recover = nullptr;
+    return true;
+}
+
+bool TakeSrtWalkFault() {
+    return std::exchange(g_srt_walk_faulted, false);
 }
 
 } // namespace Shader
@@ -912,6 +954,15 @@ namespace Shader {
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
     UNREACHABLE_MSG("RegisterWalkerCode unimplemented for target architecture.");
+}
+
+bool RunSrtWalker(PFN_SrtWalker walker, const u32* user_data, u32* flat_dst) {
+    walker(user_data, flat_dst);
+    return true;
+}
+
+bool TakeSrtWalkFault() {
+    return false;
 }
 
 namespace Optimization {

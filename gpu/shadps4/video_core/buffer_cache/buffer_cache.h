@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <boost/container/small_vector.hpp>
@@ -136,9 +137,14 @@ private:
     }
 
     const Buffer* GetArena(u64 first_block, u64 last_block);
+    /// bbport: the arenas whose range includes arena page `page` (at most two).
+    boost::container::small_vector<const Buffer*, 2> ArenasCovering(u64 page) const;
+    /// bbport: binds the memory already resident in the range of a new arena.
+    void BindResidentRanges(const Buffer* arena);
 
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
-    vk::DeviceMemory AllocateArenaChunk(vk::MemoryAllocateInfo alloc_info);
+    struct ChunkBacking;
+    ChunkBacking AllocateArenaChunk(vk::MemoryAllocateInfo alloc_info);
 
     void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size);
 
@@ -177,7 +183,13 @@ private:
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
 
+    /// bbport: the arena starting at each arena page, two pages long (one at the top), so a
+    /// request (at most two pages) always fits the arena of its first page and arenas never
+    /// migrate; neighbouring arenas overlap by a page and memory there is bound in both.
+    /// BB_ARENA_MIGRATE=1: as before, the arena covering each page, merged when a request spans
+    /// two of them.
     std::array<const Buffer*, MAX_ARENA_PAGES> address_space{};
+    bool migrate_arenas{};
     u64 arena_page_bits{MAX_ARENA_PAGE_BITS};
     u64 arena_page_size{u64{1} << MAX_ARENA_PAGE_BITS};
     u64 num_arena_pages{u64{1} << (ADDRESS_SPACE_BITS - MAX_ARENA_PAGE_BITS)};
@@ -207,7 +219,12 @@ private:
     u32 blocks_per_chunk_shift{};
     /// Second (RunGarbageCollector's clock) each chunk was last bound, by chunk index.
     std::vector<u32> chunk_last_use;
-    std::unordered_map<u64, vk::DeviceMemory> chunk_memory;
+    struct ChunkBacking {
+        vk::DeviceMemory memory;
+        u64 offset;    ///< in `memory`: non-zero for a slot of the reserve
+        bool counted;  ///< counts towards BB_ARENA_LIMIT_MB (VRAM of its own)
+    };
+    std::unordered_map<u64, ChunkBacking> chunk_memory;
     /// An arena migration binds the same allocation into the replacement buffer while the old
     /// sparse buffer remains alive. Unbind every buffer before freeing the allocation.
     std::unordered_map<u64, std::vector<const Buffer*>> chunk_arenas;
@@ -218,6 +235,14 @@ private:
 
     u32 arena_memory_type_index{};
     u32 arena_memory_type_bits{}; ///< bbport: the types the arena accepts (system memory fallback)
+    /// bbport (Supermedo/bloodborne_pc 5f65e2d): VRAM kept at start for the arena when the GPU
+    /// has no other room (discrete GPUs), handed out in chunk-sized slots.
+    vk::DeviceMemory reserve_memory{};
+    u64 reserve_size{};
+    u64 reserve_next{};                ///< slots below this offset have been handed out once
+    std::vector<u64> reserve_free;     ///< offsets of slots given back by the collector
+    std::mutex reserve_mutex;          ///< reserve_free: slots come back from deferred operations
+    u64 vram_allocated{};              ///< bytes of `counted` chunks (BB_ARENA_LIMIT_MB)
     u32 block_size{};
     u32 block_shift{};
     u32 blocks_per_arena_page{};

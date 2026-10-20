@@ -127,7 +127,9 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     meta.Read(perm_idx);
 
     spec.Deserialize(ar);
-    info.Deserialize(ar);
+    if (!info.Deserialize(ar)) {
+        return false;
+    }
 
     // Motion vertex shaders embed session-local buffer device addresses. They must be
     // recompiled for the current allocation, never loaded from a previous process. bbport
@@ -615,7 +617,15 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     srt.Read(this, sizeof(*this));
 
     if (walker_func_size) {
-        walker_func = RegisterWalkerCode(ar.CurrPtr(), walker_func_size);
+        // bbport: a walker the old fault handler patched to read 0: the shader is translated
+        // again instead, so its draws get their real resource tables back (issue #47).
+        const u8* code = ar.CurrPtr();
+        if (WalkerCodeLooksPatched({code, walker_func_size})) {
+            walker_func = nullptr;
+            ar.Advance(walker_func_size);
+            return false;
+        }
+        walker_func = RegisterWalkerCode(code, walker_func_size);
         ar.Advance(walker_func_size);
     }
 

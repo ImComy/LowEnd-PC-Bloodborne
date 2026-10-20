@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
 from link_modules import LEA_DOWN, LEA_UP, protect_image, protect_red_zones, red_zones_enabled  # noqa: E402
+from cpu_compat import site_check  # noqa: E402
 
 SENTINEL = 0x1122334455667788
 STORE = 30  # offset of the faulting store in leaf()
@@ -29,7 +30,7 @@ def leaf(page):
     code = (bytes.fromhex('c5fcc2c00f') + b'\x48\xb8' + struct.pack('<Q', SENTINEL) +
             bytes.fromhex('48894424c0') + b'\x48\xb9' + struct.pack('<Q', page) +
             bytes.fromhex('c70101000000') + bytes.fromhex('488b4424c0' 'c5f877' 'c3'))
-    return code, [[STORE, 'c70101000000', [-6]]]
+    return code, [[STORE, site_check(bytes.fromhex('c70101000000')), [-6]]]
 
 
 class TrampolineBytes(unittest.TestCase):
@@ -46,13 +47,14 @@ class TrampolineBytes(unittest.TestCase):
 
     def test_other_instructions_of_a_site_are_copied_unchanged(self):
         image = bytearray(bytes.fromhex('8b442404' '8946a4' 'c3'))  # mov eax,[rsp+4]; mov [rsi-0x5c],eax
-        code, applied = protect_red_zones(image, [[0, '8b4424048946a4', [4, -3]]], 0x40)
+        code, applied = protect_red_zones(image, [[0, site_check(image[:7]), [4, -3]]], 0x40)
         self.assertEqual(applied, 1)
         self.assertTrue(code.startswith(bytes.fromhex('8b442404') + LEA_DOWN + bytes.fromhex('8946a4') + LEA_UP))
 
     def test_changed_bytes_or_relocations_leave_the_site_alone(self):
         image = bytearray(leaf(0)[0])
-        self.assertEqual(protect_red_zones(image, [[STORE, 'c70102000000', [-6]]], 0x100), (b'', 0))
+        other = site_check(bytes.fromhex('c70102000000'))
+        self.assertEqual(protect_red_zones(image, [[STORE, other, [-6]]], 0x100), (b'', 0))
         self.assertEqual(protect_red_zones(image, leaf(0)[1], 0x100, skip=[STORE + 3]), (b'', 0))
         self.assertEqual(image, leaf(0)[0])
 
@@ -104,7 +106,7 @@ class SiteTable(unittest.TestCase):
         # 0x28ce7b0 writes trail vertices with live locals at [rsp-0x6c, rsp); 0x28ce9b5 then
         # loaded a NULL pointer from the overwritten [rsp-0x60].
         covered = set()
-        for offset, original, lengths in self.sites:
+        for offset, _, lengths in self.sites:
             pos = offset
             for length in lengths:
                 if length < 0:
@@ -116,8 +118,8 @@ class SiteTable(unittest.TestCase):
     def test_sites_do_not_overlap_community_patches(self):
         lines = ET.parse(ROOT / 'patches' / 'Bloodborne.xml').iter('Line')
         patched = sorted(int(line.get('Address'), 16) - 0x400000 for line in lines)
-        for offset, original, _ in self.sites:
-            end = offset + len(original) // 2
+        for offset, _, lengths in self.sites:
+            end = offset + sum(abs(n) for n in lengths)
             self.assertFalse(any(offset - 8 < p < end for p in patched), hex(offset))
 
 

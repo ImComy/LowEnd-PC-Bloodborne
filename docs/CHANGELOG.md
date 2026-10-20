@@ -4,6 +4,27 @@ Windows releases of this fork, newest first. Each is on the
 [releases page](https://github.com/Jgamrot/bloodborne_pc/releases) as `bbport-windows.zip`.
 Planned work is in [ROADMAP.md](ROADMAP.md).
 
+## Unreleased (1.9.8)
+
+- **Button prompt mods are no longer in the download.** Dommo's Xbox prompts and JinkiJinn's
+  PCBButtons are edits of the game's own menu file, so the port stops shipping them. Choosing
+  Xbox or Keyboard in *Settings → Controls → Button prompts* opens the mod's Nexus page
+  ([30](https://www.nexusmods.com/bloodborne/mods/30), [460](https://www.nexusmods.com/bloodborne/mods/460))
+  and takes the file you downloaded (.zip, .7z, .rar or its `common.tpf.dcx`). Prompts already
+  in your mods folder keep working. The release script now refuses to package game archives.
+- **Legacy CPU plan without game bytes.** `tools/legacy-cpu-plan.json` (plan v4) and its span
+  evidence keep only addresses, lengths and hashes; the original instructions are read from
+  your own dump when the profile runs. The translated image is byte-identical to 1.9.7's.
+- **No game code anywhere in the port.** The red-zone table (`patches/redzone.json`, 607 sites)
+  and every code check in the engine (hooks for the in-game menu, mouse camera, key prompts,
+  Rebirth, Hunter's Atlas, the map, aspect ratio, respawn and menu-heap fixes, The Hunter's
+  Dream) now recognise the game's code by length and hash (`src/code_check.h`); hooks copy the
+  instructions they displace from the running game. Tests that need original code read it from
+  a prepared `eboot.elf` named by `BB_TEST_EBOOT_ELF` and skip without one.
+- **Patch list without game bytes.** `patches/Bloodborne.xml` dropped 463 lines (1,073 bytes)
+  that only rewrote the game's own bytes at their address. Every FPS preset, output size and
+  effect/cheat setting (1,440 combinations) produces byte-identical patched memory.
+
 ## 1.9.7
 
 A full-screen map, frame generation, seamless co-op that hands out its bells, and fixes from

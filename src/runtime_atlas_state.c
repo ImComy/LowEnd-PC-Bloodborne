@@ -5,6 +5,8 @@
  */
 #include "runtime_atlas_state.h"
 #include "runtime_map.h"
+#include "code_check.h"
+#include "map_build_guard.inc"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -137,31 +139,28 @@ static void game_tick(void) {
 static int64_t ATLAS_ABI frame_bridge(void *self) {
     game_tick();return original_frame(self);
 }
-static int guard(uintptr_t rva,const unsigned char *bytes,size_t n,uint64_t size) {
-    return rva<=size && n<=size-rva && !memcmp((const void*)(base+rva),bytes,n);
+static int guard(uintptr_t rva,BbCode code,uint64_t size) {
+    return rva<=size && code.n<=size-rva && bb_code_is((const void*)(base+rva),code);
 }
 #endif
 void runtime_atlas_state_bind(void *image,uint64_t size) {
     state_ready=travel_ready=0;base=(uintptr_t)image;
     if(!image || size<0x553e880)return;
 #ifdef _WIN32
-    static const unsigned char flag_guard[]={0x53,0x49,0x89,0xd0,0x8b,0x4f,0x1c,0x31,0xd2,0x89,0xf0,0xf7,0xf1,0x41,0x89,0xc2,0x44,0x0f,0xaf,0xd1,0x48,0x8b,0x5f,0x38};
-#include "map_build_guard.inc"
-    if(!guard(BB_MAP_GUARD_OFFSET,bb_map_guard,sizeof(bb_map_guard),size))return;
-    if(!guard(0x13cfc00,flag_guard,sizeof(flag_guard),size))return;
+    static const BbCode flag_guard={24,0x74c51decca8fcc1full};
+    if(!guard(BB_MAP_GUARD_OFFSET,bb_map_guard,size))return;
+    if(!guard(0x13cfc00,flag_guard,size))return;
     state_ready=1;puts("Atlas: guarded read-only event flags ready");
     const char *opt=getenv("BB_MAP_TRAVEL_ENABLED");if(!opt || strcmp(opt,"1"))return;
-    static const unsigned char frame[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x38};
-    static const unsigned char warp[]={0x55,0x48,0x89,0xe5,0x48,0x63,0xc6,0x48,0x69,0xc8,0x89,0xb5,0xf8,0x14,0x48,0x89,0xca,0x48,0xc1,0xea,0x3f,0x48,0xc1,0xe9,0x2d,0x01,0xd1};
-    static const unsigned char ret[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x53,0x48,0x83,0xec,0x28,0x89,0xfb,0x4c,0x8b,0x35,0xba,0x6a,0xe7,0x03};
-    static const unsigned char use[]={0x48,0x8b,0x05,0x91,0x95,0xfe,0x03,0x40,0x88,0xb8,0x24,0x15,0,0,0xc3};
-    if(!guard(0x2034770,frame,sizeof(frame),size)||!guard(0x132e050,warp,sizeof(warp),size)||
-       !guard(0x156d110,ret,sizeof(ret),size)||!guard(0x156d0e0,use,sizeof(use),size)){
+    static const BbCode frame={17,0x522377a1cb8f9aceull},warp={27,0xada8fdec309ed75eull},
+                        ret={22,0xbeeda4c399b90ea3ull},use={15,0x3ce3e09a8235c7f6ull};
+    if(!guard(0x2034770,frame,size)||!guard(0x132e050,warp,size)||
+       !guard(0x156d110,ret,size)||!guard(0x156d0e0,use,size)){
         puts("Atlas: travel unavailable; native entry fingerprint mismatch");return;
     }
     unsigned char *trampoline=VirtualAlloc(NULL,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
     if(!trampoline)return;
-    memcpy(trampoline,frame,sizeof(frame));trampoline[17]=0xff;trampoline[18]=0x25;memset(trampoline+19,0,4);
+    memcpy(trampoline,(const void*)(base+0x2034770),17);trampoline[17]=0xff;trampoline[18]=0x25;memset(trampoline+19,0,4);
     uintptr_t resume=base+0x2034770+17;memcpy(trampoline+23,&resume,8);
     DWORD old=0;
     if(!VirtualProtect(trampoline,4096,PAGE_EXECUTE_READ,&old)){VirtualFree(trampoline,0,MEM_RELEASE);return;}

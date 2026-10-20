@@ -15,8 +15,8 @@
   "discarded_raw_candidates_with_instruction_proof": [
     {
       "containing_address": 40558283,
-      "containing_bytes": "7471",
-      "containing_instruction": "je 0x26adf3e",
+      "containing_length": 2,
+      "containing_mnemonic": "je",
       "reason": "starts_inside_other_decoded_instruction",
       "source": 40558284,
       "target": 40558358
@@ -33,22 +33,22 @@
   "spans": [
     {
       "address": 40558053,
-      "bytes": "f30fbdc0b920000000",
+      "check": "29b9b316bd49d9cf",
       "end": 40558062
     },
     {
       "address": 40558078,
-      "bytes": "f30fbcc883f910",
+      "check": "543d1aacaffff543",
       "end": 40558085
     },
     {
       "address": 40558270,
-      "bytes": "f30fbdfaba1f000000",
+      "check": "687a9f36bd45337f",
       "end": 40558279
     },
     {
       "address": 40558354,
-      "bytes": "f30fbdf1b91f000000",
+      "check": "998aa47f519891a0",
       "end": 40558363
     }
   ],

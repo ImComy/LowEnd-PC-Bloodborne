@@ -38,6 +38,31 @@ class GraphicsPresetTests(unittest.TestCase):
                          ('fsr3', '3840x2160', '0', '0'))
         self.assertEqual(app['fps_mode'], '60')
 
+    def test_new_installs_run_120_and_saved_settings_keep_their_frame_rate(self):
+        self.assertEqual(core.app_settings({})['fps_mode'], '120')
+        # Saved before 120 was the default, without a frame rate of their own: they ran unlocked.
+        self.assertEqual(core.app_settings({'game_dir': 'x'})['fps_mode'], 'uncap')
+        self.assertEqual(core.app_settings({'fps_mode': '60'})['fps_mode'], '60')
+        modes = [v for v, _ in core.FPS_MODES]
+        self.assertEqual(modes[0], '120')
+        self.assertTrue({'120', '144', 'uncap', '90', '60', '30'} <= set(modes))
+        self.assertIn('Amelia', dict(core.FPS_MODES)['uncap'][0])
+
+    def test_window_options_reach_the_game(self):
+        app = dict(core.APP_DEFAULTS)
+        with patch.dict(os.environ, {}, clear=True):
+            env = core.game_environment(app)
+            self.assertEqual(env['BB_FULLSCREEN_MODE'], 'borderless')
+            self.assertNotIn('BB_DISPLAY', env)
+            self.assertEqual(env['BB_VOICE_LANGUAGE'], 'auto')
+            app.update(fullscreen_mode='exclusive', display='2', voice_language='ptb')
+            env = core.game_environment(app)
+            self.assertEqual((env['BB_FULLSCREEN_MODE'], env['BB_DISPLAY'], env['BB_VOICE_LANGUAGE']),
+                             ('exclusive', '2', 'ptb'))
+        for key, options in (('fullscreen_mode', core.FULLSCREEN_MODES), ('display', core.DISPLAYS),
+                             ('voice_language', core.VOICE_LANGUAGES)):
+            self.assertIn(core.APP_DEFAULTS[key], [v for v, _ in options])
+
     def test_recommendation_from_gpu_status(self):
         cases = {
             'NVIDIA GeForce RTX 4060 Laptop GPU, discrete, 7956 MiB': 'high',

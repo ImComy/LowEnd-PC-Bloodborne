@@ -20,7 +20,7 @@ from pathlib import Path
 import struct
 from prepare import parse_self, span, unpack
 from link_libc import encode_id
-from cpu_compat import atomic_output, patch_image, patch_libc
+from cpu_compat import atomic_output, patch_image, patch_libc, site_check
 
 DEFAULT_MODULES = ('libc.prx', 'libSceFios2.prx')
 FS_LOAD = bytes.fromhex('64488b042500000000')  # mov rax, fs:[0]
@@ -110,17 +110,17 @@ def protect_red_zones(image, sites, base, skip=()):
     functions keep live locals (PS4 and Linux leave those 128 bytes alone). A store that faults
     on a page the GPU tracker write-protected is resumed with the locals overwritten: the
     attack-trail writer at 0x28ce7b0 then loads NULL from [rsp-0x60] (D018/D028/D087). Each site
-    (tools/redzone_sites.py: offset, original bytes, instruction lengths, negative = store)
-    jumps to a copy at `base` where the stores run below the red zone. Sites whose bytes
-    differ or that overlap a relocation (`skip`: sorted targets) stay as they are. Returns
+    (tools/redzone_sites.py: offset, site_check of its original bytes, instruction lengths,
+    negative = store; the table holds no game bytes) jumps to a copy at `base` where the stores
+    run below the red zone. Sites whose bytes differ or that overlap a relocation (`skip`:
+    sorted targets) stay as they are. Returns
     the copies and the number of sites redirected. From Supermedo/bloodborne_pc PR #2."""
     code = bytearray()
     applied = 0
-    for offset, original, lengths in sites:
-        original = bytes.fromhex(original)
-        end = offset + len(original)
+    for offset, check, lengths in sites:
+        end = offset + sum(abs(length) for length in lengths)
         near = bisect.bisect_right(skip, offset - 8)
-        if image[offset:end] != original or (near < len(skip) and skip[near] < end):
+        if site_check(image[offset:end]) != check or (near < len(skip) and skip[near] < end):
             continue
         here = base + len(code)
         pos = offset
@@ -130,7 +130,7 @@ def protect_red_zones(image, sites, base, skip=()):
             pos += abs(length)
         code += b'\xe9' + struct.pack('<i', end - (base + len(code) + 5))
         code += b'\xcc' * (-len(code) % 16)
-        image[offset:end] = b'\xe9' + struct.pack('<i', here - (offset + 5)) + b'\xcc' * (len(original) - 5)
+        image[offset:end] = b'\xe9' + struct.pack('<i', here - (offset + 5)) + b'\xcc' * (end - offset - 5)
         applied += 1
     return bytes(code), applied
 
@@ -148,7 +148,7 @@ def protect_image(image, segments, untranslated, relocs, path=RED_ZONE_SITES):
     sites = json.loads(raw)['sites']
     clear = []
     for site in sites:
-        start, end = max(0, site[0] - (MAX_INSTRUCTION - 1)), site[0] + len(site[1]) // 2
+        start, end = max(0, site[0] - (MAX_INSTRUCTION - 1)), site[0] + sum(abs(n) for n in site[2])
         if image[start:end] != untranslated[start:end]:
             report['cpu_overlaps'].append(hex(site[0]))
         else:

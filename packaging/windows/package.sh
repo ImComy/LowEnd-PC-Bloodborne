@@ -109,21 +109,8 @@ mkdir -p "$rpc"
 clang++ -std=c++17 -O2 -DUNICODE -D_UNICODE -municode -mwindows -static \
     tools/bloodborne_rpc/main.cpp -o "$rpc/BloodborneRPC.exe" -lkernel32 -luser32
 cp tools/bloodborne_rpc/companion.json tools/bloodborne_rpc/config.json "$rpc/"
-# Xbox button prompts by Dommo (nexusmods.com/bloodborne/mods/30, redistribution allowed with
-# credit), shipped in every package so a fresh download has them. BB_XBOX_PROMPTS_DIR overrides
-# the copy kept in packaging/windows/mods.
-BB_XBOX_PROMPTS_DIR=${BB_XBOX_PROMPTS_DIR:-"packaging/windows/mods/Xbox 360 Prompts (Elden Ring)"}
-[[ -d $BB_XBOX_PROMPTS_DIR ]] || { echo "Xbox prompts folder not found: $BB_XBOX_PROMPTS_DIR" >&2; exit 1; }
-mkdir -p "$dest/mods"
-cp -r "$BB_XBOX_PROMPTS_DIR" "$dest/mods/"
-[[ -f "$dest/mods/Xbox 360 Prompts (Elden Ring)/menu/common.tpf.dcx" ]] ||
-    { echo "The package is missing the Xbox prompt texture." >&2; exit 1; }
-# Keyboard prompts: PCBButtons by JinkiJinn (nexusmods.com/bloodborne/mods/460, redistribution
-# allowed with credit). Kept in bundled/, not mods/, so it is off until the player chooses Keyboard.
-mkdir -p "$dest/bundled"
-cp -r "packaging/windows/bundled/Keyboard Prompts (PCBButtons)" "$dest/bundled/"
-[[ -f "$dest/bundled/Keyboard Prompts (PCBButtons)/menu/common.tpf.dcx" ]] ||
-    { echo "The package is missing the keyboard prompt texture." >&2; exit 1; }
+# Button prompt mods (Xbox by Dommo, PCBButtons by JinkiJinn) are edits of the game's own
+# menu/common.tpf.dcx, so they are not shipped: the launcher adds the player's own Nexus download.
 # Legacy CPU (Intel 3rd generation and older): the translation plan scripts/cpu_compat.py applies.
 mkdir -p "$dest/tools" && cp tools/legacy-cpu-plan.json "$dest/tools/"
 cp run.py LICENSE README.md packaging/windows/README-Windows.txt "$dest/"
@@ -162,6 +149,14 @@ for package in protobuf abseil-cpp openssl miniupnpc zlib; do
     if [[ -f $license ]]; then cp "$license" "$dest/licenses/$package-LICENSE.txt"; fi
 done
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
+# Nothing from the game itself may ship: its archives (.dcx and what they hold) and executables.
+game_files=$(find "$dest" -type f \( -iname '*.dcx' -o -iname '*.tpf' -o -iname '*bnd' -o -iname '*.bdt' \
+    -o -iname '*.bhd' -o -iname '*.prx' -o -iname '*.sprx' -o -iname 'eboot.bin' -o -iname 'param.sfo' \))
+if [[ -n $game_files ]]; then
+    echo "Game files in the package (players supply their own):" >&2
+    echo "$game_files" >&2
+    exit 1
+fi
 mkdir -p dist
 rm -f dist/bbport-windows.zip
 (cd out/stage && powershell -NoProfile -Command \

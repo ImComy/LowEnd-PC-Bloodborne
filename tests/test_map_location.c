@@ -5,18 +5,23 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include "../src/code_check.h"
+#include "../src/code_check.h"
 #include "../src/map_build_guard.inc"
+#include "game_code.h"
+#include "game_code.h"
 static void ptr(unsigned char* memory,size_t off,void* value){memcpy(memory+off,&value,sizeof(value));}
 int main(void) {
     BbMapLocation l;
+    bb_test_require_game("map location");
+    bb_test_require_game("map location");
     unsigned char *image=calloc(1,0x5570000),*world=calloc(1,0x100),*chr=calloc(1,0x600),*modules=calloc(1,0x100),*transform=calloc(1,0x300),*menu=calloc(1,0x100);
     assert(image && world && chr && modules && transform);
     runtime_map_bind(image,0x5570000);assert(!runtime_map_location(&l) && !l.valid && !runtime_map_menu_open());
-    memcpy(image+BB_MAP_GUARD_OFFSET,bb_map_guard,sizeof(bb_map_guard));
-    const unsigned char menu_guard[]={0x48,0x8b,0x05,0xd6,0x6f,0xdf,0x03,0x83,0x78,0x3c,0x00};
-    const unsigned char focus_guard[]={0x8b,0x8b,0xe8,0x0a,0,0,0x85,0xc9,0x79,0x06,0x8b,0x8b,0xe4,0x0a,0,0};
-    memcpy(image+0x1bdf835,focus_guard,sizeof(focus_guard));
-    memcpy(image+0x176b89b,menu_guard,sizeof(menu_guard));ptr(image,0x5562878,menu);
+    /* The anchors, the menu predicate and the focus read, from the player's game. */
+    bb_test_place_game_code(image,BB_MAP_GUARD_OFFSET,bb_map_guard.n);
+    bb_test_place_game_code(image,0x1bdf835,16);
+    bb_test_place_game_code(image,0x176b89b,11);ptr(image,0x5562878,menu);
     runtime_map_bind(image,0x5570000);assert(!runtime_map_menu_open());
     assert(runtime_map_confirm_button()==0); /* Missing native predicate: fail closed. */
     const unsigned char cross[]={0x31,0xc0,0xc3,0x90,0x90,0x90};
@@ -31,8 +36,7 @@ int main(void) {
     BbMapMenu native_menu;assert(!runtime_map_menu_state(&native_menu)&&!native_menu.supported);
     memcpy(image+0x1fb8730,cross,sizeof(cross));
     _putenv_s("BB_ENTER_BUTTON","");
-#include "../src/map_confirm_guard.inc"
-    memcpy(image+0x1fb8730,bb_map_cross_region_guard,sizeof(bb_map_cross_region_guard));
+    bb_test_place_game_code(image,0x1fb8730,32); /* the game's own region predicate */
     assert(runtime_map_confirm_button()==0x4000u);
     image[0x1fb8730+24]^=1;assert(runtime_map_confirm_button()==0);
     memcpy(image+0x1fb8730,cross,sizeof(cross));

@@ -17,18 +17,12 @@
 #include <uchar.h>
 
 #define FORMATTER BB_BN(0x1ee7270)
-static const unsigned char FORMATTER_PROLOGUE[] = {
-    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41,
-    0x54, 0x53, 0x48, 0x81, 0xec, 0x20, 0x01, 0x00, 0x00
-};
+static const BbCode FORMATTER_PROLOGUE = {18, 0x7dffdc99bb984501ull};
 static const char16_t IMAGE_FORMAT[] = u"<img src='%s' vspace='-8'>";
 static const char16_t KEY_FORMAT[] = u"[%s]";
 /* MsgRepositoryImp::LookupEntry, also identified in bbhost. */
 #define LOOKUP_ENTRY BB_BN(0x136f340)
-static const unsigned char LOOKUP_PROLOGUE[] = {
-    0x89, 0xf0, 0x48, 0x8b, 0x77, 0x08, 0x48, 0x8b,
-    0x34, 0xc6, 0x31, 0xc0, 0x48, 0x85, 0xf6
-};
+static const BbCode LOOKUP_PROLOGUE = {15, 0xc129c946d74b4a37ull};
 
 typedef struct { const char *tag; int action[4]; } Prompt;
 #define NONE (-1)
@@ -373,17 +367,16 @@ int bb_key_prompts_install(void) {
         return 0;
     }
     const void *site = bb_guest(FORMATTER), *lookup = bb_guest(LOOKUP_ENTRY);
-    if (!site || !lookup || memcmp(site, FORMATTER_PROLOGUE, sizeof(FORMATTER_PROLOGUE)) ||
-        memcmp(lookup, LOOKUP_PROLOGUE, sizeof(LOOKUP_PROLOGUE))) {
+    if (!bb_code_is(site, FORMATTER_PROLOGUE) || !bb_code_is(lookup, LOOKUP_PROLOGUE)) {
         puts("Key prompts: message code is not the expected game 1.09 code; PlayStation glyphs remain");
         return 0;
     }
     bb_bindings_load(getenv("BB_CONFIG"));
-    if (bb_hook_mid(LOOKUP_ENTRY, LOOKUP_PROLOGUE, sizeof(LOOKUP_PROLOGUE), replace_message)) {
+    if (bb_hook_mid(LOOKUP_ENTRY, LOOKUP_PROLOGUE, replace_message)) {
         printf("Key prompts: %s\n", bb_hooks_error());
         return 0;
     }
-    if (bb_hook_mid(FORMATTER, FORMATTER_PROLOGUE, sizeof(FORMATTER_PROLOGUE), replace_glyph)) {
+    if (bb_hook_mid(FORMATTER, FORMATTER_PROLOGUE, replace_glyph)) {
         printf("Key prompts: formatted glyphs stayed as pad buttons: %s\n", bb_hooks_error());
         return 1;
     }

@@ -24,6 +24,7 @@ from capstone import x86
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
 from prepare import parse_self  # noqa: E402
+from cpu_compat import site_check  # noqa: E402
 
 RSP, RBP, RIP = x86.X86_REG_RSP, x86.X86_REG_RBP, x86.X86_REG_RIP
 STACK = {RSP, x86.X86_REG_ESP, x86.X86_REG_SP, x86.X86_REG_SPL}
@@ -132,9 +133,10 @@ def analyse(md, image, start, end):
                 first -= 1
         span = run[first:last + 1]
         if sum(i.size for i in span) >= 5:
-            sites.append([span[0].address, b''.join(i.bytes for i in span).hex(),
+            # The original bytes stay in the player's game: the table keeps their hash.
+            sites.append([span[0].address, site_check(b''.join(i.bytes for i in span)),
                           [-i.size if i.address in store_at else i.size for i in span]])
-    covered = {a for s in sites for a in range(s[0], s[0] + len(s[1]) // 2)}
+    covered = {a for s in sites for a in range(s[0], s[0] + sum(abs(n) for n in s[2]))}
     return sites, [f'{i.address:#x}' for i in stores if i.address not in covered]
 
 

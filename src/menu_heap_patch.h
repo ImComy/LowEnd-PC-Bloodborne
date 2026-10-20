@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "code_check.h"
+
 enum { BB_MENU_HEAP_UNSUPPORTED, BB_MENU_HEAP_APPLIED };
 
 /* CUSA03173 1.09: the menu system's constructor (guest 0x1f59d50) carves two fixed heaps out of
@@ -17,11 +19,10 @@ enum { BB_MENU_HEAP_UNSUPPORTED, BB_MENU_HEAP_APPLIED };
  * (+52 MiB) and +32 MiB failed at start-up; +16 started. Checks the instruction first; offsets are guest offsets. */
 static inline int bb_patch_menu_heap(unsigned char *image, size_t size, unsigned extra_mib) {
     /* mov rsi, [r13]; mov edx, 0x2200000; xor ecx, ecx */
-    static const unsigned char code[] = {0x49, 0x8b, 0x75, 0x00, 0xba, 0x00,
-                                         0x00, 0x20, 0x02, 0x31, 0xc9};
+    static const BbCode code = {11, 0xa136fe1cce34196eull};
     enum { CODE_AT = 0x1f5a475, ORIGINAL = 0x2200000 };
-    if (!image || extra_mib == 0 || extra_mib > 64 || size < CODE_AT + sizeof(code) ||
-        memcmp(image + CODE_AT, code, sizeof(code)))
+    if (!image || extra_mib == 0 || extra_mib > 64 || size < CODE_AT + code.n ||
+        !bb_code_is(image + CODE_AT, code))
         return BB_MENU_HEAP_UNSUPPORTED;
     const uint32_t bytes = ORIGINAL + (uint32_t)extra_mib * 0x100000u;
     memcpy(image + CODE_AT + 5, &bytes, 4);

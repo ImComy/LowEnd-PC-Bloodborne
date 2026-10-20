@@ -1,6 +1,7 @@
 // bbport: SDL3 window for the Vulkan swapchain (X11 or Wayland).
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +26,65 @@ static std::atomic<int> g_window_points_w{0}, g_window_points_h{0};
 
 namespace Frontend {
 
+namespace {
+bool ContainsIgnoringCase(const char* text, const char* part) {
+    const size_t length = std::strlen(part);
+    for (; *text; ++text) {
+        size_t i = 0;
+        while (i < length && text[i] &&
+               std::tolower(static_cast<unsigned char>(text[i])) ==
+                   std::tolower(static_cast<unsigned char>(part[i]))) {
+            ++i;
+        }
+        if (i == length) {
+            return true;
+        }
+    }
+    return length == 0;
+}
+
+// The monitor the window (and fullscreen) goes to. BB_DISPLAY: its number in SDL's order (1, 2,
+// ...; the launcher's Monitor choice sets it) or a part of its name; without it SDL's primary
+// display. The monitors are logged so a report says which one was taken. (parsifal295,
+// Supermedo/bloodborne_pc PR #66; bbport 0.5-pre1, deadinside28/bloodborne_pc 39940f2.)
+SDL_DisplayID ChooseDisplay() {
+    const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    const char* wanted = std::getenv("BB_DISPLAY");
+    int count = 0;
+    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    SDL_DisplayID chosen = 0;
+    if (ids && wanted && *wanted) {
+        char* end = nullptr;
+        const long number = std::strtol(wanted, &end, 10);
+        if (end && *end == '\0') {
+            if (number >= 1 && number <= count) {
+                chosen = ids[number - 1];
+            }
+        } else {
+            for (int i = 0; i < count && !chosen; ++i) {
+                const char* name = SDL_GetDisplayName(ids[i]);
+                if (name && ContainsIgnoringCase(name, wanted)) {
+                    chosen = ids[i];
+                }
+            }
+        }
+    }
+    const SDL_DisplayID display = chosen ? chosen : primary;
+    for (int i = 0; ids && i < count; ++i) {
+        const char* name = SDL_GetDisplayName(ids[i]);
+        const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(ids[i]);
+        std::printf("Display %d: %s %dx%d%s%s\n", i + 1, name ? name : "?", mode ? mode->w : 0,
+                    mode ? mode->h : 0, ids[i] == primary ? " (primary)" : "",
+                    ids[i] == display ? " <- the game's" : "");
+    }
+    if (wanted && *wanted && !chosen) {
+        std::printf("Display: BB_DISPLAY=%s matches none, the primary one is used\n", wanted);
+    }
+    SDL_free(ids);
+    return display;
+}
+} // namespace
+
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -32,8 +92,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     }
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED);
-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED);
+    const SDL_DisplayID display = ChooseDisplay();
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width_);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height_);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
@@ -44,6 +105,19 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
+    // BB_FULLSCREEN_MODE=exclusive (the launcher's Fullscreen type): fullscreen switches the
+    // display to its desktop mode instead of a borderless window over it (the default). A
+    // window is borderless in fullscreen until it is given a display mode; the in-game
+    // Fullscreen switch keeps it. (RafaelHGOliveira, Supermedo/bloodborne_pc PR #68.)
+    if (const char* mode = std::getenv("BB_FULLSCREEN_MODE"); mode && !std::strcmp(mode, "exclusive")) {
+        const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window));
+        if (!desktop || !SDL_SetWindowFullscreenMode(window, desktop)) {
+            LOG_WARNING(Frontend, "Exclusive fullscreen unavailable, staying borderless: {}", SDL_GetError());
+        } else {
+            std::printf("Display: exclusive fullscreen %dx%d at %.0f Hz\n", desktop->w, desktop->h,
+                        double(desktop->refresh_rate));
+        }
+    }
 
     const char* driver = SDL_GetCurrentVideoDriver();
     const SDL_PropertiesID wp = SDL_GetWindowProperties(window);

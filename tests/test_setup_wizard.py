@@ -83,58 +83,76 @@ class FirstRunWizardTests(unittest.TestCase):
         backend.setValue('game_dir', str(game))
         self.assertEqual(backend.startupProblem, '')
 
-    def test_bundled_xbox_prompts_are_on_by_default_and_only_on_controller_page(self):
-        source = Path(__file__).resolve().parents[1] / 'packaging' / 'windows' / 'mods'
-        import shutil
-        shutil.copytree(source, self.root / 'mods')
+    def download(self, members):
+        """A Nexus-style download: a zip of {member path: bytes}."""
+        import zipfile
+        archive = self.root / f'download-{len(list(self.root.glob("download-*")))}.zip'
+        with zipfile.ZipFile(archive, 'w') as package:
+            for name, data in members.items():
+                package.writestr(name, data)
+        return archive
+
+    def test_prompt_mods_come_from_the_players_own_download(self):
         backend = LauncherBackend()
-        self.assertEqual(backend.promptChoice, 'Xbox')
-        self.assertEqual(backend.contentMods, [])
-        backend.setPrompt('PlayStation')
+        self.assertEqual(backend.promptChoice, 'PlayStation')  # the port ships no prompt mods
+        texture = b'DCX\0' + b'keys' * 8
+        # Cancelled: nothing changes and the notice says where to get it.
+        with patch.object(LauncherBackend, '_choose_prompt_download', lambda self, choice: ''):
+            backend.setPrompt('Keyboard')
         self.assertEqual(backend.promptChoice, 'PlayStation')
-        # Keyboard copies in the PCBButtons images the port ships (packaging/windows/bundled),
-        # enables them instead of the Xbox images and binds the keys its images show.
-        self.assertIsNotNone(core.bundled_keyboard_prompts())
-        backend.setPrompt('Keyboard')
+        self.assertIn('nexusmods.com/bloodborne/mods/460', backend.notice)
+        keyboard = self.download({'PCBButtons/menu/common.tpf.dcx': texture, 'PCBButtons/readme.txt': b'hi'})
+        with patch.object(LauncherBackend, '_choose_prompt_download', lambda self, choice: str(keyboard)):
+            backend.setPrompt('Keyboard')
         self.assertEqual(backend.promptChoice, 'Keyboard')
-        profile = json.loads((self.root / 'mods.json').read_text())
-        self.assertIn('Xbox 360 Prompts (Elden Ring)', profile['disabled'])
-        self.assertIn(core.KEYBOARD_PROMPTS, profile['enabled'])
-        self.assertTrue((self.root / 'mods' / core.KEYBOARD_PROMPTS / 'menu' / 'common.tpf.dcx').is_file())
+        installed = self.root / 'mods' / core.KEYBOARD_PROMPTS
+        self.assertEqual((installed / 'menu' / 'common.tpf.dcx').read_bytes(), texture)
+        self.assertIn('JinkiJinn', (installed / 'SOURCE.txt').read_text(encoding='utf-8'))
         ini = (self.root / 'bbport.ini').read_text(encoding='utf-8')
         self.assertIn('key_roll=Left Shift', ini)
         self.assertIn('key_lock_on=Mouse3', ini)
         self.assertNotIn(core.KEYBOARD_PROMPTS, [m['name'] for m in backend.contentMods])
-        # What run.py reads at every start (BB_BUTTON_PROMPTS): the key images, not the Xbox ones.
+        # A download with several variants: the player picks the variant's own file.
+        variants = self.download({'A/menu/common.tpf.dcx': texture, 'B/menu/common.tpf.dcx': texture})
+        with patch.object(LauncherBackend, '_choose_prompt_download', lambda self, choice: str(variants)):
+            backend.setPrompt('Xbox')
+        self.assertIn('2 prompt variants', backend.notice)
+        self.assertEqual(backend.promptChoice, 'Keyboard')
+        chosen = self.root / 'unpacked' / 'common.tpf.dcx'
+        chosen.parent.mkdir()
+        chosen.write_bytes(b'DCX\0xbox')
+        with patch.object(LauncherBackend, '_choose_prompt_download', lambda self, choice: str(chosen)):
+            backend.setPrompt('Xbox')
+        self.assertEqual(backend.promptChoice, 'Xbox')
+        self.assertTrue((self.root / 'mods' / core.XBOX_PROMPTS / 'menu' / 'common.tpf.dcx').is_file())
+        # What run.py reads at every start (BB_BUTTON_PROMPTS): the Xbox images, not the keys.
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
         import mods
         in_use = mods.selected(self.root / 'mods', self.root / 'mods.json')
-        self.assertIn(core.KEYBOARD_PROMPTS, in_use)
-        self.assertNotIn('Xbox 360 Prompts (Elden Ring)', in_use)
-        # A choice made in the game's overlay (mods.json only) shows in the launcher too.
-        profile = json.loads((self.root / 'mods.json').read_text())
-        profile['disabled'] = sorted(set(profile['disabled']) - {'Xbox 360 Prompts (Elden Ring)'}
-                                     | {core.KEYBOARD_PROMPTS})
-        (self.root / 'mods.json').write_text(json.dumps(profile))
-        backend.refresh_addons()
-        self.assertEqual(backend.promptChoice, 'Xbox')
-        backend.setPrompt('Keyboard')  # already imported: no file dialog
-        self.assertEqual(backend.promptChoice, 'Keyboard')
-        backend.setPrompt('Xbox')
-        profile = json.loads((self.root / 'mods.json').read_text())
-        self.assertIn(core.KEYBOARD_PROMPTS, profile['disabled'])
-        self.assertEqual(backend.promptChoice, 'Xbox')
-
-    def test_keyboard_prompts_missing_from_the_copy_says_so(self):
-        backend = LauncherBackend()
-        original = core.bundled_keyboard_prompts
-        core.bundled_keyboard_prompts = lambda: None
-        try:
+        self.assertIn(core.XBOX_PROMPTS, in_use)
+        self.assertNotIn(core.KEYBOARD_PROMPTS, in_use)
+        # Both added: switching asks for nothing.
+        with patch.object(LauncherBackend, '_choose_prompt_download', lambda self, choice: self.fail('asked')):
             backend.setPrompt('Keyboard')
-        finally:
-            core.bundled_keyboard_prompts = original
-        self.assertNotEqual(backend.promptChoice, 'Keyboard')
-        self.assertIn('latest release', backend.notice)
+            self.assertEqual(backend.promptChoice, 'Keyboard')
+            # A choice made in the game's overlay (mods.json only) shows in the launcher too.
+            profile = json.loads((self.root / 'mods.json').read_text())
+            profile['disabled'] = sorted(set(profile['disabled']) - {core.XBOX_PROMPTS} | {core.KEYBOARD_PROMPTS})
+            (self.root / 'mods.json').write_text(json.dumps(profile))
+            backend.refresh_addons()
+            self.assertEqual(backend.promptChoice, 'Xbox')
+            backend.setPrompt('PlayStation')
+            self.assertEqual(backend.promptChoice, 'PlayStation')
+
+    def test_prompt_download_without_a_game_texture_is_refused(self):
+        backend = LauncherBackend()
+        for members in ({'readme.txt': b'no texture'}, {'menu/common.tpf.dcx': b'not a dcx'}):
+            archive = self.download(members)
+            with patch.object(LauncherBackend, '_choose_prompt_download', lambda self, choice: str(archive)):
+                backend.setPrompt('Keyboard')
+            with self.subTest(members=list(members)):
+                self.assertEqual(backend.promptChoice, 'PlayStation')
+                self.assertFalse((self.root / 'mods' / core.KEYBOARD_PROMPTS).exists())
 
     def test_launch_options_moved_out_of_advanced(self):
         backend = LauncherBackend()

@@ -53,8 +53,8 @@ of upcoming features are marked *Pre-release* on the
   invert Y are in **Settings > Controls > Mouse**.
 - Keyboard movement smoothing: changing direction with WASD swings smoothly instead of
   stopping for a moment (**Settings > Controls > Keyboard**, *Off* to disable).
-- Button prompts: PlayStation, Xbox (included) or keyboard keys (see below), switchable in the
-  launcher and the guide.
+- Button prompts: PlayStation, Xbox or keyboard keys (see below), switchable in the launcher
+  and the guide. Xbox and keyboard prompts are Nexus Mods downloads the launcher adds for you.
 
 **Optional enhancements** (off by default; switch them on in the launcher's **Mods** page or
 the guide. They are made from your own game files at start, which stay unchanged.)
@@ -123,8 +123,13 @@ achievements show their numbers and icons. Nothing syncs to PlayStation Network.
 ## Keyboard button prompts
 
 Choose **Keyboard** in the launcher (**Settings > Controls**). The key images are
-[PCBButtons](https://www.nexusmods.com/bloodborne/mods/460) by **JinkiJinn**, included with the
-port as its permissions allow; nothing needs downloading. Choosing it also sets your
+[PCBButtons](https://www.nexusmods.com/bloodborne/mods/460) by **JinkiJinn**. They are an edit
+of the game's own menu file, so the port does not include them: the first time you choose
+Keyboard, the mod's Nexus page opens; download it and pick the downloaded file (.zip, .7z or
+.rar) in the dialog. Xbox prompts work the same way, from Dommo's
+[Xbox (and switch) UI for Bloodborne](https://www.nexusmods.com/bloodborne/mods/30) (if the
+download has several styles, unpack it and pick the `common.tpf.dcx` of the one you want).
+Choosing Keyboard also sets your
 keys to the ones the images show: E interact, Left Shift dodge, R blood vial, Q item,
 F transform, left / right / middle mouse for attack / firearm / lock-on, Left Ctrl + left mouse
 for strong attack, Space for L3, G and H for gestures and personal effects. Switch back to
@@ -227,9 +232,8 @@ page take precedence:
   the English menu), jpramosjp and gStone.
 - The mouse camera by imedved (Nexus Mods), ported by mcrib884 and Jhony-Jhansen.
 - Xbox prompts by **Dommo**, from [Xbox (and switch) UI for Bloodborne](https://www.nexusmods.com/bloodborne/mods/30),
-  redistributed under the upload permission on the mod page.
-- Keyboard prompts by **JinkiJinn**, from [PCBButtons](https://www.nexusmods.com/bloodborne/mods/460),
-  redistributed with credit under the upload permission on the mod page.
+  and keyboard prompts by **JinkiJinn**, from [PCBButtons](https://www.nexusmods.com/bloodborne/mods/460):
+  supported by the launcher, downloaded by each player from Nexus Mods.
 - The respawn fix after [AwesomeObserver's Windows work](https://github.com/AwesomeObserver/bloodborne_pc/blob/windows/docs/respawn-loading-windows.md).
 - [ShadPs4Plus PKG Extractor 1.1](https://github.com/AzaharPlus/shadPS4Plus) by AzaharPlus
   (GPL-2.0), included for installing your dump.

@@ -341,6 +341,10 @@ add_executable(stage-point-test EXCLUDE_FROM_ALL ../tests/test_stage_point.cpp)
 target_compile_options(stage-point-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(stage-point-test PRIVATE shim)
 
+add_executable(srt-walker-test EXCLUDE_FROM_ALL ../tests/test_srt_walker.cpp)
+target_compile_options(srt-walker-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(srt-walker-test PRIVATE $<TARGET_PROPERTY:bbgpu,INCLUDE_DIRECTORIES>)
+
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
 target_compile_options(motion-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(motion-history-test PRIVATE ..)

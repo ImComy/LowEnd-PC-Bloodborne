@@ -86,7 +86,7 @@ if [[ ${BB_AUTO_RENDER_RES:-} == 1 ]]; then
 fi
 # BB_RENDER_RES=WxH explicitly sets the game's render resolution (a patch at start).
 # Frame rate: BB_FPS=uncap (default; delta-time patch, vblank follows the display),
-# 60/90 (fixed-timestep patches) or 30 (unpatched). BB_PATCHES adds patch names ("a;b").
+# 60/90 (fixed-timestep patches), 120/144 (90 FPS++ scaled to the rate) or 30 (unpatched). BB_PATCHES adds patch names ("a;b").
 fps=${BB_FPS:-uncap}
 # bbport.ini output_res other than 1080p (720p for the Steam Deck, 1440p, 2160p): the whole game
 # renders at the preset's size of the output (a patch), the upscaler fills the output, the UI is
@@ -124,9 +124,21 @@ elif [[ -n ${scaled_output:-} ]]; then
     export BB_DMEM_MB=${BB_DMEM_MB:-9152}
     echo "Output ${scaled_output}: scene ${scaled_render}, direct memory ${BB_DMEM_MB} MiB (live_resolution=1: live changes)"
 fi
+# The game's graphics heaps at PC sizes need the larger pool (patches.py HEAP_PATCH; pc_heaps=0 or
+# BB_PC_HEAPS=0: the PS4's heaps, the larger pool only above 1080p).
+pc_heaps=${BB_PC_HEAPS:-}
+if [[ -z $pc_heaps && -f $BB_CONFIG ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ ^pc_heaps=([01])$ ]] && pc_heaps=${BASH_REMATCH[1]}
+    done < "$BB_CONFIG"
+fi
+[[ $pc_heaps == 0 ]] || export BB_DMEM_MB=${BB_DMEM_MB:-9152}
 "$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --extra "${BB_PATCHES:-}" --settings "$BB_CONFIG" --game-dir "$game" --render-res "${BB_RENDER_RES:-}" --output-res "${BB_OUTPUT_RES:-}" \
     --patches-dir "${BB_PATCHES_DIR:-$data/patches}" --patches-config "${BB_PATCHES_CONFIG:-$data/patches.json}"
-if [[ -z ${BB_VBLANK_HZ:-} ]]; then
+if [[ $fps == 120 || $fps == 144 ]]; then
+    # 90 FPS++ scaled to the rate (patches.py SCALED_FPS): vblank and frame limit at the rate.
+    export BB_VBLANK_HZ=${BB_VBLANK_HZ:-$fps} BB_FPS_LIMIT=$fps
+elif [[ -z ${BB_VBLANK_HZ:-} ]]; then
     case $fps in uncap) export BB_VBLANK_HZ=0 ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
 fi
 # FSR 4: faster post passes next to the downloaded ones (incremental; tools/fsr4_optimize.sh).

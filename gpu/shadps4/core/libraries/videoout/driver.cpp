@@ -612,15 +612,26 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                                                       : frame_limit;
         return limit ? std::chrono::nanoseconds(1000000000 / limit) : std::chrono::nanoseconds(0);
     };
+    // bbport: BB_FRAME_CAP_GRID=1 (bbport.ini frame_cap_grid=1; with the strict cap): the next
+    // slot is a period after the planned one, but no earlier than a period minus 1/16 after the
+    // flip made. Counting only from the flip adds the limiter's wake-up delay to every frame
+    // (116 FPS at a cap of 120). Supermedo/bloodborne_pc d646b1d, measured at a cap of 120 in
+    // Central Yharnam: shortest interval 6.05 -> 7.81 ms, 118.5 FPS. Off by default.
     auto next_flip = std::chrono::steady_clock::now();
     static const bool strict_cap = EmulatorSettingsImpl::Flag("BB_STRICT_FRAME_CAP", true);
+    static const bool slot_grid = EmulatorSettingsImpl::Flag("BB_FRAME_CAP_GRID", false);
     const auto advance_slot = [&](std::chrono::steady_clock::time_point now) {
         const auto frame_period = period_now();
+        if (strict_cap && slot_grid) {
+            return std::max(next_flip + frame_period,
+                            std::chrono::steady_clock::now() + frame_period - frame_period / 16);
+        }
         return strict_cap ? std::chrono::steady_clock::now() + frame_period
                           : std::max(next_flip + frame_period, now - frame_period);
     };
-    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS\n",
-                EmulatorSettings.GetVblankFrequency(), frame_limit);
+    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS%s\n",
+                EmulatorSettings.GetVblankFrequency(), frame_limit,
+                strict_cap && slot_grid ? " (slot grid)" : "");
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};

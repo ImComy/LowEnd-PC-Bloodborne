@@ -3,6 +3,9 @@
  * 1.09 layout facts cross-checked against bbhost's public engine documentation.
  */
 #include "runtime_map.h"
+#include "code_check.h"
+#include "map_build_guard.inc"
+#include "map_confirm_guard.inc"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,20 +25,19 @@ void runtime_map_bind(void *image, uint64_t size) {
      * than prologues prevent a future executable silently using stale offsets. */
     if (!image || size<0x553e880) return;
     /* MAP_BUILD_GUARD is an image byte fingerprint generated during packaging. */
-#include "map_build_guard.inc"
-    if (memcmp((unsigned char *)image+BB_MAP_GUARD_OFFSET,bb_map_guard,sizeof(bb_map_guard))) {
+    if (!bb_code_is((unsigned char *)image+BB_MAP_GUARD_OFFSET,bb_map_guard)) {
         puts("Map: executable layout mismatch; position tracking disabled");return;
     }
     world_slot=(uintptr_t)image+0x553e878;
     /* Game IsShowMenu reads this manager; +0x54 contributes the player-menu bit.
      * Fingerprint the exact predicate, and observe without calling or patching it. */
-    static const unsigned char menu_guard[]={0x48,0x8b,0x05,0xd6,0x6f,0xdf,0x03,0x83,0x78,0x3c,0x00};
+    static const BbCode menu_guard={11,0x7176be36008f47bdull};
     /* The native grid's selected-index read, independently correlated with
      * actual 0/1/2 top-row selection and 8 below System in isolated runtime.
      * No writes or game function calls are used by this bridge. */
-    static const unsigned char focus_guard[]={0x8b,0x8b,0xe8,0x0a,0,0,0x85,0xc9,0x79,0x06,0x8b,0x8b,0xe4,0x0a,0,0};
-    if(size>0x5562880 && !memcmp((unsigned char*)image+0x176b89b,menu_guard,sizeof(menu_guard)) &&
-       !memcmp((unsigned char*)image+0x1bdf835,focus_guard,sizeof(focus_guard))) {
+    static const BbCode focus_guard={16,0xf262bc35fb871498ull};
+    if(size>0x5562880 && bb_code_is((unsigned char*)image+0x176b89b,menu_guard) &&
+       bb_code_is((unsigned char*)image+0x1bdf835,focus_guard)) {
         image_base=(uintptr_t)image;menu_slot=image_base+0x5562878;menu_main_slot=image_base+0x5562870;
     }
     puts("Map: read-only local position reader ready");
@@ -67,13 +69,12 @@ uint32_t runtime_map_confirm_button(void) {
     static const unsigned char circle[]={0xb8,0x01,0x00,0x00,0x00,0xc3};
     unsigned char code[6];
     /* The manifest-supported US build's original predicate uses Cross. */
-#include "map_confirm_guard.inc"
-    unsigned char original[sizeof(bb_map_cross_region_guard)];
+    unsigned char original[32];
     if(!image_base || !read_at(image_base+0x1fb8730,code,sizeof(code)))return 0;
     if(!memcmp(code,cross,sizeof(cross)))return 0x4000u;
     if(!memcmp(code,circle,sizeof(circle)))return 0x2000u;
-    if(read_at(image_base+0x1fb8730,original,sizeof(original)) &&
-       !memcmp(original,bb_map_cross_region_guard,sizeof(original)))return 0x4000u;
+    if(read_at(image_base+0x1fb8730,original,bb_map_cross_region_guard.n) &&
+       bb_code_is(original,bb_map_cross_region_guard))return 0x4000u;
     return 0;
 }
 int runtime_map_menu_state(BbMapMenu *out) {

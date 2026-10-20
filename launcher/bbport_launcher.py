@@ -55,7 +55,9 @@ EFFECTS = [
 ]
 MODEL_LOD = [("Как в игре", "0"), ("Максимальная (-2)", "-2"), ("Ниже (1)", "1"),
              ("Минимальная (2)", "2")]
-FPS_MODES = [("Без ограничения (патч)", "uncap"), ("60", "60"), ("90", "90"),
+# 120 and 144: 90 FPS++ with its values for that rate (scripts/patches.py SCALED_FPS).
+FPS_MODES = [("120 (рекомендуется)", "120"), ("144", "144"), ("90", "90"), ("60", "60"),
+             ("Без ограничения (патч; может зависнуть в конце заставки Викарии Амелии)", "uncap"),
              ("30 (как на PS4)", "30")]
 PRESENT_MODES = [("Mailbox", "Mailbox"), ("FIFO (VSync)", "Fifo"),
                  ("FIFO Relaxed", "FifoRelaxed"), ("Immediate", "Immediate")]
@@ -76,7 +78,7 @@ DEFAULTS = {
     "fullscreen": False,
     "hdr": False,
     "present_mode": "Mailbox",
-    "fps_mode": "uncap",
+    "fps_mode": "120",
     "fps_limit": 0,
     "draw_pipe": "",
     "readbacks": "",
@@ -105,8 +107,12 @@ INI_DEFAULTS = {
 def load_settings():
     settings = dict(DEFAULTS)
     try:
-        settings.update(json.loads(CONFIG_FILE.read_text(encoding='utf-8')))
-    except (OSError, ValueError):
+        saved = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+        settings.update(saved)
+        # Saved before 120 FPS was the default, without a frame rate of their own: unlocked.
+        if saved and "fps_mode" not in saved:
+            settings["fps_mode"] = "uncap"
+    except (OSError, ValueError, TypeError):
         pass
     return settings
 

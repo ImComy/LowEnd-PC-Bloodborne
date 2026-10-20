@@ -402,6 +402,9 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         info.pgm_base = params.Base();
         info.user_data = params.user_data;
         info.RefreshFlatBuf();
+        if (Shader::TakeSrtWalkFault()) {
+            return nullptr; // the regular path below meets the same fault and skips the draw
+        }
         if (info.pgm_base != stage.pgm_base || info.flattened_ud_buf.size() != stage.flat_size ||
             std::memcmp(info.flattened_ud_buf.data(), stage.flat,
                         stage.flat_size * sizeof(u32)) != 0) {
@@ -422,7 +425,10 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
     }
     sel.draw_indirect_params = params;
-    if (!RefreshGraphicsKey(sel)) {
+    Shader::TakeSrtWalkFault();
+    // bbport: a stage whose resource table walk faulted (a null table pointer while an effect
+    // starts or an area loads) skips this one draw; the next draw walks the tables again.
+    if (!RefreshGraphicsKey(sel) || Shader::TakeSrtWalkFault()) {
         return nullptr;
     }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
@@ -460,7 +466,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
-    if (!RefreshComputeKey()) {
+    Shader::TakeSrtWalkFault();
+    if (!RefreshComputeKey() || Shader::TakeSrtWalkFault()) {
         return nullptr;
     }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);

@@ -409,9 +409,21 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
 
         const auto* header = reinterpret_cast<const PM4Header*>(ccb.data());
         const u32 type = header->type;
+        if (type == 2) {
+            ccb = NextPacket(ccb, 1); // padding
+            continue;
+        }
         if (type != 3) {
-            // No other types of packets were spotted so far
-            UNREACHABLE_MSG("Invalid PM4 type {}", type);
+            // bbport: as in the draw queue below, a garbage header (zeroed or reused memory)
+            // drops the rest of this buffer instead of stopping the game ("PM4 type 0",
+            // Awakenchan 0.9.30; the PS4's GPU skips such words too).
+            if (static int reported = 0; reported < 16) {
+                ++reported;
+                LOG_WARNING(Render, "Constant queue: PM4 header {:#010x} (type {}): rest of the "
+                                    "buffer dropped",
+                            header->raw, type);
+            }
+            break;
         }
 
         const PM4ItOpcode opcode = header->type3.opcode;

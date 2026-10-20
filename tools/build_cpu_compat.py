@@ -2,6 +2,8 @@
 
 Only decode functions described by the game's unwind tables or exported symbols.
 The plan is applied to generated images; original PKGs and game files stay intact.
+It records addresses, lengths and hashes only (cpu_compat.site_check), never game bytes:
+the loader reads the originals from the player's own dump.
 """
 import collections
 import argparse
@@ -21,8 +23,9 @@ sys.path.insert(0, str(PORT / 'scripts'))
 import capstone
 import keystone
 from link_modules import module
-from cpu_compat import (atomic_output, COUNT_SPANS, COUNT_SPAN_MODULE_SHA256,
-                        COUNT_SPAN_FUNCTION, COUNT_SPAN_EVIDENCE_REFERENCE, COUNT_SPAN_EVIDENCE_SHA256)
+from cpu_compat import (atomic_output, site_check, COUNT_SPANS, COUNT_SPAN_MODULE_SHA256,
+                        COUNT_SPAN_FUNCTION, COUNT_SPAN_EVIDENCE_REFERENCE, COUNT_SPAN_EVIDENCE_SHA256,
+                        PLAN_VERSION)
 
 SUPPORTED = {'andn', 'bextr', 'blsr', 'blsi', 'blsmsk', 'tzcnt', 'lzcnt', 'movbe'}
 ASSEMBLER = keystone.Ks(keystone.KS_ARCH_X86, keystone.KS_MODE_64)
@@ -264,7 +267,7 @@ def audit_count_span_entries(mod):
     functions = function_ranges(mod)
     starts = [a for a, _ in functions]
     cache = {function_start: context_rows}
-    interiors = {a for start, spec in COUNT_SPANS.items() for a in range(start + 1, start + len(bytes.fromhex(spec[0])))}
+    interiors = {a for start, spec in COUNT_SPANS.items() for a in range(start + 1, start + spec[0])}
     known_entries = []
     unresolved = []
     rejected_candidates = []
@@ -314,10 +317,9 @@ def audit_count_span_entries(mod):
             else:
                 reason = None
             if reason:
-                at = file_offset(mod, address, length, True)
                 rejected_candidates.append({'source': source, 'target': target, 'reason': reason,
-                                            'containing_address': address, 'containing_bytes': bytes(mod['elf'][at:at + length]).hex(),
-                                            'containing_instruction': mnemonic + ' ' + operands})
+                                            'containing_address': address, 'containing_length': length,
+                                            'containing_mnemonic': mnemonic})
                 return
         unresolved.append({'source': source, 'target': target, 'size': size})
 
@@ -349,7 +351,7 @@ def audit_count_span_entries(mod):
     return {'schema_version': 1, 'method': 'allocator_count_spans_v1',
             'source_sha256': mod['sha256'], 'function_start': function_start, 'function_end': function_end,
             'function_sha256': function_hash, 'global_indirect_proof': False,
-            'spans': [{'address': a, 'end': a + len(bytes.fromhex(s[0])), 'bytes': s[0]} for a, s in COUNT_SPANS.items()],
+            'spans': [{'address': a, 'end': a + s[0], 'check': s[1]} for a, s in COUNT_SPANS.items()],
             'coverage': {'executable_bytes_scanned_rel32': executable_bytes, 'rel8_window': [low, high],
                          'function_entries': len(functions), 'symbols': len(mod['symbols']),
                          'resolved_relocation_destinations': resolved_relocations,
@@ -373,26 +375,25 @@ def count_span_evidence(report):
 
 def count_span_site(mod, address, entry_evidence):
     """Construct one exact two-instruction sequence; body contains only count."""
-    original, instruction, body_hash = COUNT_SPANS[address]
-    expected = bytes.fromhex(original)
-    offset = file_offset(mod, address, len(expected), True)
-    if mod['sha256'] != COUNT_SPAN_MODULE_SHA256 or bytes(mod['elf'][offset:offset + len(expected)]) != expected:
+    length, check, mnemonic, body_hash = COUNT_SPANS[address]
+    offset = file_offset(mod, address, length, True)
+    original = bytes(mod['elf'][offset:offset + length])
+    if mod['sha256'] != COUNT_SPAN_MODULE_SHA256 or site_check(original) != check:
         raise ValueError('D015 count span bytes/source changed.')
-    rows = list(capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64).disasm_lite(expected, address))
-    if len(rows) != 2 or [row[1] for row in rows] != [4, len(expected) - 4]:
+    rows = list(capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64).disasm_lite(original, address))
+    if len(rows) != 2 or [row[1] for row in rows] != [4, length - 4] or rows[0][2] != mnemonic:
         raise ValueError('D015 count span instruction boundaries changed.')
-    mnemonic, operands = instruction.split(' ', 1)
-    replacement = body(mnemonic, operands)
+    replacement = body(mnemonic, rows[0][3])
     if hashlib.sha256(replacement).hexdigest() != body_hash:
         raise ValueError('D015 count-only body changed; update its reviewed whitelist deliberately.')
     start, end, digest = COUNT_SPAN_FUNCTION
     context_offset = file_offset(mod, start, end - start, True)
     if hashlib.sha256(bytes(mod['elf'][context_offset:context_offset + end - start])).hexdigest() != digest:
         raise ValueError('D015 count span function context changed.')
-    return {'kind': 'count_span', 'module': 'eboot.bin', 'address': address, 'bytes': original,
-            'instruction': instruction, 'body': replacement.hex(), 'rip_fixups': [],
-            'span': {'count_length': 4, 'tail_bytes': expected[4:].hex(),
-                     'instruction_lengths': [4, len(expected) - 4], 'function_start': start,
+    return {'kind': 'count_span', 'module': 'eboot.bin', 'address': address, 'length': length,
+            'check': check, 'mnemonic': mnemonic, 'body': replacement.hex(), 'rip_fixups': [],
+            'span': {'count_length': 4,
+                     'instruction_lengths': [4, length - 4], 'function_start': start,
                      'function_end': end, 'function_sha256': digest, 'entry_evidence': entry_evidence}}
 
 
@@ -402,7 +403,7 @@ def main():
     parser.add_argument('--out', type=Path, default=PORT / 'tools/legacy-cpu-plan.json')
     args = parser.parse_args()
     game = args.game
-    plan = {'version': 3, 'modules': {}, 'sites': [], 'unhandled': [], 'coverage': {}}
+    plan = {'version': PLAN_VERSION, 'modules': {}, 'sites': [], 'unhandled': [], 'coverage': {}}
     decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     detailed = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     detailed.detail = True
@@ -449,12 +450,12 @@ def main():
                     instruction = next(detailed.disasm(bytes(mod['elf'][at:at+length]), address))
                     fixups = rip_fixups(instruction, replacement)
                 except ValueError as error:
-                    plan['unhandled'].append({'module': name, 'address': hex(address), 'instruction': mnemonic + ' ' + operands,
+                    plan['unhandled'].append({'module': name, 'address': hex(address), 'mnemonic': mnemonic,
                                               'reason': str(error)})
                     continue
-                plan['sites'].append({'module': name, 'address': address, 'bytes': bytes(mod['elf'][at:at+length]).hex(),
-                                      'body': replacement.hex(), 'instruction': mnemonic + ' ' + operands,
-                                      'rip_fixups': fixups})
+                plan['sites'].append({'module': name, 'address': address, 'length': length,
+                                      'check': site_check(mod['elf'][at:at+length]),
+                                      'body': replacement.hex(), 'mnemonic': mnemonic, 'rip_fixups': fixups})
             remaining = start + size - decoded_end
             coverage['fully_decoded_functions' if not remaining else 'partial_functions'] += 1
             coverage['undecoded_bytes'] += remaining
@@ -469,7 +470,7 @@ def main():
     with atomic_output(target) as stream:
         stream.write(json.dumps(plan, separators=(',', ':')).encode('utf-8'))
     print(json.dumps({'stage': 'cpu_plan_ready', 'sites': len(plan['sites']), 'unhandled': len(plan['unhandled']),
-                      'counts': dict(collections.Counter(site['instruction'].split()[0] for site in plan['sites'])),
+                      'counts': dict(collections.Counter(site['mnemonic'] for site in plan['sites'])),
                       'plan': str(target)}), flush=True)
 
 

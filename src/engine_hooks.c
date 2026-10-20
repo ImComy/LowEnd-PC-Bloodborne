@@ -143,8 +143,7 @@ int bb_read(uint64_t address, void *out, size_t n) {
 /* The frame-time manager's update (SprjFlipper::Update), once a frame on the main thread; its
  * first 17 bytes, as bbhost's engine/frame_rate.cpp checks them. */
 enum { FRAME_MANAGER = 0x2434770, MAX_TICKS = 8 };
-static const unsigned char frame_manager_prologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41,
-                                                      0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x38};
+static const BbCode frame_manager_prologue = {17, 0x522377a1cb8f9aceull};
 static void (*g_ticks[MAX_TICKS])(void);
 static int g_tick_count;
 
@@ -158,8 +157,7 @@ static BB_GUEST_ABI void main_frame(void) {
 
 int bb_main_frame_install(void) {
     if (!g_tick_count) return 0;
-    return !bb_hook_entry(BB_BN(FRAME_MANAGER), frame_manager_prologue, sizeof(frame_manager_prologue),
-                          (void *)main_frame);
+    return !bb_hook_entry(BB_BN(FRAME_MANAGER), frame_manager_prologue, (void *)main_frame);
 }
 
 int bb_patch(uint64_t at, const void *expected, const void *replacement, size_t n) {
@@ -170,12 +168,13 @@ int bb_patch(uint64_t at, const void *expected, const void *replacement, size_t 
     return 0;
 }
 
-int bb_hook_entry(uint64_t at, const unsigned char *prologue, size_t n, void *host) {
+int bb_hook_entry(uint64_t at, BbCode prologue, void *host) {
+    const size_t n = prologue.n;
     if (!bb_hooks_enabled()) return refuse("engine hooks are off (BB_ENGINE_HOOKS=0)");
-    if (!host || !prologue || n < 5 || n > 32) return refuse("bad hook arguments");
+    if (!host || n < 5 || n > 32) return refuse("bad hook arguments");
     if (!in_image(at, n)) return refuse("address outside the image");
     unsigned char *site = g_image + at;
-    if (memcmp(site, prologue, n)) return refuse("unexpected bytes at the function entry");
+    if (!bb_code_is(site, prologue)) return refuse("unexpected bytes at the function entry");
     /* Save the argument registers (integer, rax for variadic callers, xmm0-7), call the host
      * function with them, restore them, run the displaced prologue and continue after it.
      * At entry rsp is 8 mod 16; seven pushes make it 0 and the 0x80-byte area keeps it. */
@@ -201,7 +200,7 @@ int bb_hook_entry(uint64_t at, const unsigned char *prologue, size_t n, void *ho
         p = emit(p, op, sizeof(op));
     }
     p = emit(p, restore, sizeof(restore));
-    p = emit(p, prologue, n);
+    p = emit(p, site, n);  /* the displaced prologue, from the game itself */
     *p++ = 0xe9;
     put_rel32(p, p + 4, site + n);
     site[0] = 0xe9;
@@ -210,11 +209,12 @@ int bb_hook_entry(uint64_t at, const unsigned char *prologue, size_t n, void *ho
     return 0;
 }
 
-static unsigned char *mid_site(uint64_t at, const unsigned char *original, size_t n) {
+static unsigned char *mid_site(uint64_t at, BbCode original) {
+    const size_t n = original.n;
     if (!bb_hooks_enabled()) return refuse("engine hooks are off (BB_ENGINE_HOOKS=0)"), NULL;
-    if (!original || n < 5 || n > 32) return refuse("bad hook arguments"), NULL;
+    if (n < 5 || n > 32) return refuse("bad hook arguments"), NULL;
     if (!in_image(at, n)) return refuse("address outside the image"), NULL;
-    if (memcmp(g_image + at, original, n)) return refuse("unexpected bytes at the hook site"), NULL;
+    if (!bb_code_is(g_image + at, original)) return refuse("unexpected bytes at the hook site"), NULL;
     return g_image + at;
 }
 
@@ -236,8 +236,9 @@ static unsigned char *emit_ymm(unsigned char *p, int i, int store) {
     return emit(p, &disp, 4);
 }
 
-int bb_hook_mid(uint64_t at, const unsigned char *original, size_t n, void (BB_GUEST_ABI *host)(BbRegs *)) {
-    unsigned char *site = mid_site(at, original, n);
+int bb_hook_mid(uint64_t at, BbCode original, void (BB_GUEST_ABI *host)(BbRegs *)) {
+    const size_t n = original.n;
+    unsigned char *site = mid_site(at, original);
     if (!site) return -1;
     if (!host) return refuse("bad hook arguments");
     /* Below the red zone, save the flags and the general registers (they form the BbRegs), align
@@ -268,7 +269,7 @@ int bb_hook_mid(uint64_t at, const unsigned char *original, size_t n, void (BB_G
     *p++ = 0x41; *p++ = 0xff; *p++ = 0xd3;  /* call r11 */
     for (int i = 0; i < 16; ++i) p = emit_ymm(p, i, 0);
     p = emit(p, restore, sizeof(restore));
-    p = emit(p, original, n);
+    p = emit(p, site, n);  /* the displaced instructions, from the game itself */
     *p++ = 0xe9;
     put_rel32(p, p + 4, site + n);
     divert(site, n, s);
@@ -280,8 +281,9 @@ struct BbSkip {
     const unsigned char *run, *skip;
 };
 
-BbSkip *bb_hook_skip(uint64_t at, const unsigned char *original, size_t n) {
-    unsigned char *site = mid_site(at, original, n);
+BbSkip *bb_hook_skip(uint64_t at, BbCode original) {
+    const size_t n = original.n;
+    unsigned char *site = mid_site(at, original);
     if (!site) return NULL;
     if (g_data_used + sizeof(BbSkip) > DATA_SIZE) return refuse("no switch space"), NULL;
     unsigned char *s = stub(6 + n + 5 + 5);
@@ -294,7 +296,7 @@ BbSkip *bb_hook_skip(uint64_t at, const unsigned char *original, size_t n) {
     put_rel32(p, p + 4, (const unsigned char *)&data->target);
     p += 4;
     data->run = p;
-    p = emit(p, original, n);
+    p = emit(p, site, n);  /* the instructions, from the game itself */
     *p++ = 0xe9;
     put_rel32(p, p + 4, site + n);
     p += 4;
