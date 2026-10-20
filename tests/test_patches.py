@@ -91,7 +91,7 @@ class NativeUiTests(unittest.TestCase):
 
 
     def test_arbitrary_aspect_and_native_movie_viewport(self):
-        for out in ((2560,1080), (5120,2160), (1280,800), (1080,1920), (5000,2000)):
+        for out in ((2560,1080), (5120,2160), (1280,800), (1920,1200), (1080,1920), (5000,2000)):
             settings={'output_res': f'{out[0]}x{out[1]}', 'upscaler':'dlss', 'preset':'1'}
             scene, actual=scaled_sizes(settings)
             self.assertEqual(actual, out)

@@ -1431,6 +1431,13 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
         hudless_pending = false;
         CaptureHudless(color);
     }
+    // In a native-size 3D scene without temporal upscaling or frame generation,
+    // the guest renders the HUD directly into the final color target. Menu-only
+    // frames still need the compositor to black out unused movie-stage borders.
+    if (Scaled() && render_width == target_width && render_height == target_height &&
+        !Active() && (!frame_generator || !frame_generator->Wanted()) && camera_motion.Depth()) {
+        return;
+    }
     // bbport: a UI draw without a color target (a Scaleform mask: color writes off) writes the
     // stencil the next UI draws test, so it belongs in the UI's output-size depth like them. In
     // the guest depth its mask was lost when the next UI draw switched depths (PrepareUiDepth
