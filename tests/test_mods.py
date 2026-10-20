@@ -268,3 +268,69 @@ class ModTests(unittest.TestCase):
         self.assertEqual(mounted['content'], 'mod')
         self.assertFalse(Path(mounted['path']).exists())
         self.assertEqual((self.assets/'a.dcx').read_bytes(), b'original')
+
+
+# BB_TEST_GAME_DIR=<CUSA03173>: the PC menu's strings merged into a mod's menu text.
+GAME = Path(os.environ['BB_TEST_GAME_DIR']) if os.environ.get('BB_TEST_GAME_DIR') else None
+
+
+@unittest.skipUnless(GAME, 'BB_TEST_GAME_DIR not set')
+class PcMenuTextTests(unittest.TestCase):
+    """Issue #48: a mod with its own menu.msgbnd.dcx hid the PC menu's strings (rows showed ids)."""
+
+    def setUp(self):
+        import menu_assets
+        from fromsoft import Bnd4, dcx_compress, dcx_decompress
+        self.m, self.Bnd4, self.dcx_decompress = menu_assets, Bnd4, dcx_decompress
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        relative = Path('msg') / 'engus' / menu_assets.MESSAGE_FILE
+        self.relative = Path('dvdroot_ps4') / relative
+        packed = (GAME / 'dvdroot_ps4' / relative).read_bytes()
+        # The PC menu's layer, as enhancements.py makes it.
+        self.pc_menu = self.root / 'pc-menu'
+        made = menu_assets.build_menu_messages(packed, menu_assets.read_messages())
+        (self.pc_menu / self.relative).parent.mkdir(parents=True)
+        (self.pc_menu / self.relative).write_bytes(made)
+        # A mod with its own menu text: the game's, with one string of its own.
+        archive = Bnd4(dcx_decompress(packed))
+        index = archive.ids.index(menu_assets.MENU_TEXT)
+        ids = menu_assets.fmg_read(archive.files[index])
+        ids[999990] = 'Change Appearance'.encode('utf-16-le')
+        archive.files[index] = menu_assets.fmg_write(ids)
+        self.mod = self.root / 'mods' / 'Appearance'
+        (self.mod / self.relative).parent.mkdir(parents=True)
+        (self.mod / self.relative).write_bytes(dcx_compress(archive.to_bytes(), template=packed))
+
+    def menu_text(self, path):
+        archive = self.Bnd4(self.dcx_decompress(Path(path).read_bytes()))
+        return self.m.fmg_read(archive.files[archive.ids.index(self.m.MENU_TEXT)])
+
+    def test_mod_menu_text_gains_the_pc_menu_strings(self):
+        layers = [('pc-menu', self.pc_menu), ('Appearance', self.mod)]
+        out = self.root / 'out'
+        merged = mods.keep_pc_menu_text(layers, {'pc-menu'}, out)
+        self.assertEqual(merged[-1], ('pc-menu-text', out / 'pc-menu-text'))
+        text = self.menu_text(out / 'pc-menu-text' / self.relative)
+        rows = self.m.read_messages()
+        self.assertEqual(text[110006].decode('utf-16-le'), rows[110006][0])
+        self.assertEqual(text[999990].decode('utf-16-le'), 'Change Appearance')
+        # Unchanged sources: the merged layer is reused as it is.
+        stamp = (out / 'pc-menu-text' / 'stamp.txt').read_text(encoding='utf-8')
+        self.assertEqual(mods.keep_pc_menu_text(layers, {'pc-menu'}, out)[-1][0], 'pc-menu-text')
+        self.assertEqual((out / 'pc-menu-text' / 'stamp.txt').read_text(encoding='utf-8'), stamp)
+
+    def test_no_layer_without_a_mod_over_the_menu_text_or_without_the_pc_menu(self):
+        out = self.root / 'out'
+        self.assertEqual(mods.keep_pc_menu_text([('pc-menu', self.pc_menu)], {'pc-menu'}, out),
+                         [('pc-menu', self.pc_menu)])
+        self.assertEqual(mods.keep_pc_menu_text([('Appearance', self.mod)], set(), out),
+                         [('Appearance', self.mod)])
+        # A mod under the PC menu's layer is already covered by it.
+        layers = [('Appearance', self.mod), ('pc-menu', self.pc_menu)]
+        self.assertEqual(mods.keep_pc_menu_text(layers, {'pc-menu'}, out), layers)
+
+    def test_a_copy_that_already_has_the_strings_is_used_as_it_is(self):
+        layers = [('pc-menu', self.pc_menu), ('Copy', self.pc_menu)]
+        self.assertEqual(mods.keep_pc_menu_text(layers, {'pc-menu'}, self.root / 'out'), layers)
