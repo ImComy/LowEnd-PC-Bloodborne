@@ -212,9 +212,12 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
         enabled = false;
     }
     if (enabled) {
-        std::printf("Upscaler: FSR 3.1 available (%s) on scene color before compute shader "
-                    "%016llx\n",
-                    BbSettings::Get().upscaler != BbSettings::UpscalerOff ? "on" : "off",
+        // Name the selected upscaler: this line used to say "FSR 3.1 available (on)" for every
+        // choice, which read as FSR 3.1 running when FSR 4 or DLSS was selected (issue #117).
+        // A fallback to FSR 3.1 prints its own line when it happens.
+        std::printf("Upscaler: %s selected, FSR 3.1 ready as the fallback, on scene color before "
+                    "compute shader %016llx\n",
+                    BbSettings::UpscalerName(BbSettings::Get().upscaler),
                     static_cast<unsigned long long>(trigger_hash));
     }
 }
@@ -536,7 +539,8 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
         return true;
     }
     if (use_fsr4) {
-        std::printf("Upscaler: FSR 4 inputs %ux%u -> %ux%u\n", w, h, ow, oh);
+        std::printf("Upscaler: %s inputs %ux%u -> %ux%u\n", UseDlss() ? "DLSS" : "FSR 4", w, h, ow,
+                    oh);
         return true;
     }
     FfxVkPortableMemoryUsage usage{};
