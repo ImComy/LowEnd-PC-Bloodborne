@@ -154,6 +154,35 @@ class CoopTests(unittest.TestCase):
         with self.assertRaises(coop.CoopError):
             coop.create_account('100.65.141.9', '', 'hunter', 'abc')
 
+    def account_server(self, *replies):
+        """create_account against canned account tool outputs, in order."""
+        tool = mock.patch.object(coop, '_account_tool', side_effect=list(replies))
+        sleep = mock.patch.object(coop.time, 'sleep')
+        self.addCleanup(tool.stop)
+        self.addCleanup(sleep.stop)
+        sleep.start()
+        return tool.start()
+
+    def test_account_created_after_the_server_finished_starting(self):
+        refused = '[connect] 100.65.141.9:31313 ...\n[connect] FAILED: connection refused\n'
+        tool = self.account_server(refused, '[connect] OK\n[login] FAILED: LoginInvalidPassword\n',
+                                   '[connect] OK\n[create] Account created successfully.\n',
+                                   '[connect] OK\n[login] OK userId=2\n')
+        self.assertEqual(coop.create_account('100.65.141.9', 'key', 'hunter', 'secret'), 'created')
+        self.assertEqual(tool.call_count, 4)
+
+    def test_account_failures_say_why(self):
+        failed_login = '[connect] OK\n[login] FAILED: LoginInvalidPassword\n'
+        for reply, reason in (('[create] FAILED: Unauthorized', 'invite code does not match'),
+                              ('[create] FAILED: CreationExistingUsername', 'already taken'),
+                              ('[create] FAILED: InvalidInput', 'does not accept the name')):
+            self.account_server(failed_login, f'[connect] OK\n{reply}\n')
+            with self.assertRaisesRegex(coop.CoopError, reason):
+                coop.create_account('100.65.141.9', 'key', 'hunter', 'secret')
+        self.account_server('[connect] OK\n[login] FAILED: LoginAlreadyLoggedIn\n')
+        with self.assertRaisesRegex(coop.CoopError, 'signed in on the host'):
+            coop.create_account('100.65.141.9', 'key', 'hunter', 'secret')
+
     @unittest.skipUnless(os.name == 'nt', 'Windows process trees')
     def test_stopping_a_server_ends_its_child_too(self):
         # Like BBSC-GameServer.exe: a parent that starts a second copy of itself and waits.

@@ -477,19 +477,71 @@ def create_account(address, key, name, password):
         raise CoopError('A co-op name is 3-16 letters, numbers, - or _.')
     if len(password) < 4:
         raise CoopError('Choose a password of at least 4 characters (one you use nowhere else).')
-    out = _account_tool(address, 'login', name, password)
+    out = _account_reply(address, 'login', name, password)
     if '[login] OK' in out:
         return 'signed in'
+    # The server answers LoginInvalidPassword for an unknown name too: only creating it tells.
+    if _account_error(out) == 'LoginAlreadyLoggedIn':
+        raise _account_failure(address, name, out)
     arguments = ['register', name, password, f'{name}@bbport-coop.invalid']
     if key:
         arguments.append(key)
-    out = _account_tool(address, *arguments)
+    out = _account_reply(address, *arguments)
     if 'Account created successfully' not in out:
-        raise CoopError('The host\'s server did not create the account (the name may be taken, or '
-                        'the invite is from another host).')
-    if '[login] OK' not in _account_tool(address, 'login', name, password):
-        raise CoopError('The account was created but does not sign in; try another name.')
+        raise _account_failure(address, name, out)
+    out = _account_reply(address, 'login', name, password)
+    if '[login] OK' not in out:
+        raise _account_failure(address, name, out)
     return 'created'
+
+
+# Connection attempts to the account server: the host's own server may still be starting
+# (Start hosting asks it right after starting it), which used to read as a taken name (#28).
+ACCOUNT_RETRY_WINDOW_S, ACCOUNT_RETRY_S = 10, 2
+
+
+def _account_reply(address, *arguments):
+    """The account tool's output, asked again for a few seconds while the server refuses the
+    connection."""
+    deadline = time.monotonic() + ACCOUNT_RETRY_WINDOW_S
+    while True:
+        out = _account_tool(address, *arguments)
+        if _account_error(out) != 'connect' or time.monotonic() + ACCOUNT_RETRY_S > deadline:
+            return out
+        time.sleep(ACCOUNT_RETRY_S)
+
+
+def _account_error(out):
+    """What failed in the account tool's output: 'connect', 'timeout', the server's error name
+    (Unauthorized, CreationExistingUsername, ...) or ''."""
+    if '[connect] FAILED' in out:
+        return 'connect'
+    for line in out.splitlines():
+        if line.startswith(('[login] FAILED:', '[create] FAILED:')):
+            return line.split(':', 1)[1].strip()
+    return 'timeout' if '[timeout]' in out else ''
+
+
+def _account_failure(address, name, out):
+    """The co-op account error for the player, from the account tool's output. All of these
+    used to say "the name may be taken, or the invite is from another host" (#28)."""
+    error = _account_error(out)
+    if error in ('connect', 'timeout'):
+        return CoopError(f'No answer from the co-op server at {address}. The host must be hosting '
+                         '(launcher open), and both of you on Tailscale or the same network.')
+    if error == 'Unauthorized':
+        return CoopError("The invite code does not match the host's server: it is from an older "
+                         'session or another host. Ask the host to copy the invite code again.')
+    if error == 'LoginAlreadyLoggedIn':
+        return CoopError(f'{name} is signed in on the host\'s server right now. Every player needs '
+                         'their own co-op name; if it is yours, close the game that uses it first.')
+    if error in ('CreationExistingUsername', 'CreationExistingEmail', 'LoginInvalidPassword'):
+        return CoopError(f'{name} is already taken on the host\'s server, with another password. Use '
+                         'the password you chose with this name before, or another co-op name.')
+    if error == 'InvalidInput':
+        return CoopError(f"The host's server does not accept the name {name}; choose another.")
+    detail = error or (out.strip().splitlines() or ['no answer'])[-1]
+    return CoopError(f"The host's server did not create the account ({detail}).")
 
 
 # --- The game ------------------------------------------------------------------------------------
