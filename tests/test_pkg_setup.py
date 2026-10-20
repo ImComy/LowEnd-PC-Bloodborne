@@ -105,11 +105,39 @@ class PackageSetupTests(unittest.TestCase):
             self._install(base, other)
         self.assertFalse((self.root / 'CUSA03173').exists())
 
-    def test_same_pkg_in_both_steps_is_rejected(self):
+    def test_single_pkg_already_109_installs_alone(self):
+        # Game of the Year PKGs with the update merged in (#43): chosen in both steps, or alone.
+        base = self.root / 'Bloodborne GOTY v1.09.pkg'
+        base.write_bytes(b'base')
+        with patch.object(setup, '_game_version', return_value='01.09'):
+            game = self._install(base, base)
+        self.assertEqual((game / 'eboot.bin').read_bytes(), b'base')
+        game.rename(self.root / 'first')
+        with patch.object(setup, '_game_version', return_value='01.09'):
+            self.assertEqual(self._install(base), self.root / 'CUSA03173')
+
+    def test_single_pkg_older_than_109_asks_for_the_update(self):
         base = self.root / 'CUSA03173.pkg'
         base.write_bytes(b'base')
-        with self.assertRaisesRegex(setup.PackageSetupError, 'both steps'):
+        with patch.object(setup, '_game_version', return_value='01.00'), \
+                self.assertRaisesRegex(setup.PackageSetupError, 'version 01.00, not 1.09'):
             self._install(base, base)
+        self.assertFalse((self.root / 'CUSA03173').exists())
+        self.assertFalse(list(self.root.glob('.bbport-install-*')))
+
+    def test_single_update_pkg_says_to_choose_the_base_first(self):
+        update = self.root / 'CUSA03173 Update v1.09.pkg'
+        update.write_bytes(b'patch')
+        with self.assertRaisesRegex(setup.PackageSetupError, 'is the 1.09 update'):
+            self._install(update, update)
+
+    def test_zip_with_only_a_109_base(self):
+        archive = self.root / 'goty.zip'
+        with zipfile.ZipFile(archive, 'w') as out:
+            out.writestr('CUSA03173.pkg', b'base')
+        with patch.object(setup, '_game_version', return_value='01.09'):
+            game = self._install(archive)
+        self.assertEqual((game / 'eboot.bin').read_bytes(), b'base')
 
     def test_wrong_files_name_what_was_chosen(self):
         base = self.root / 'CUSA03173.pkg'

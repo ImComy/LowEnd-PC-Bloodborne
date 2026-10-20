@@ -633,7 +633,11 @@ class LauncherBackend(QObject):
         if Path(source).suffix.casefold() == '.pkg':
             update, _ = QFileDialog.getOpenFileName(
                 None, 'Step 2: choose the plain 1.09 UPDATE PKG (not 720p or 1080p)', str(Path(source).parent), 'Update PKG (*.pkg)')
-            if not update:
+            # Game of the Year PKGs may already hold 1.09: no separate update then (#43).
+            if not update and QMessageBox.question(
+                    None, 'No update PKG',
+                    f'Is {Path(source).name} already updated to 1.09 (a PKG with the update merged in)?\n\n'
+                    'Yes installs it without an update PKG; the installer checks the version.') != QMessageBox.Yes:
                 return
         parent = QFileDialog.getExistingDirectory(
             None, 'Last step: choose where to create the CUSA03173 game folder', str(Path.home()))
