@@ -120,6 +120,10 @@ class CoopTests(unittest.TestCase):
         self.assertNotIn('Any', script)
         self.assertEqual(script.count('New-NetFirewallRule'), len(coop.FIREWALL_PORTS) + 1)
 
+    def test_firewall_script_quotes_an_apostrophe_in_the_path(self):
+        script = coop._firewall_script(r"C:\Users\O'Neil\bbport\bin\bb-probe.exe")
+        self.assertIn(r"-Program 'C:\Users\O''Neil\bbport\bin\bb-probe.exe'", script)
+
     def test_tailscale_addresses(self):
         self.assertTrue(coop.is_tailscale('100.65.141.9'))
         self.assertFalse(coop.is_tailscale('100.128.0.1'))

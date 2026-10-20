@@ -211,6 +211,12 @@ def host_address():
 
 # --- One-time setup (one administrator prompt) ---------------------------------------------------
 
+def _quoted(text):
+    """A PowerShell single-quoted string: a path with an apostrophe (C:\\Users\\O'Neil) broke the
+    script, and the setup then never finished."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
 def _firewall_script(game_exe):
     ranges = ','.join(f"'{r}'" for r in FIREWALL_RANGES)
     lines = ['$ErrorActionPreference = "Continue"', f'$ranges = @({ranges})']
@@ -221,18 +227,18 @@ def _firewall_script(game_exe):
                      f"-LocalPort {port} -RemoteAddress $ranges -Action Allow | Out-Null")
     rule = f'{RULE_PREFIX} game'
     lines.append(f"Remove-NetFirewallRule -DisplayName '{rule}' -ErrorAction SilentlyContinue")
-    lines.append(f"New-NetFirewallRule -DisplayName '{rule}' -Direction Inbound -Program '{game_exe}' "
+    lines.append(f"New-NetFirewallRule -DisplayName '{rule}' -Direction Inbound -Program {_quoted(game_exe)} "
                  "-RemoteAddress $ranges -Action Allow | Out-Null")
     redist = package_dir('server') / 'server' / 'vc_redist.x64.exe'
     lines.append("$key = 'HKLM:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64'")
     lines.append(f"if (-not ((Test-Path $key) -and (Get-ItemProperty $key).Installed -eq 1) -and "
-                 f"(Test-Path '{redist}')) {{ Start-Process '{redist}' -ArgumentList '/install /quiet /norestart' -Wait }}")
+                 f"(Test-Path {_quoted(redist)})) {{ Start-Process {_quoted(redist)} -ArgumentList '/install /quiet /norestart' -Wait }}")
     return '\r\n'.join(lines) + '\r\n'
 
 
 def setup_done(game_exe):
     command = (f"$r = Get-NetFirewallRule -DisplayName '{RULE_PREFIX} game' -ErrorAction SilentlyContinue; "
-               f"if ($r -and (($r | Get-NetFirewallApplicationFilter).Program -eq '{game_exe}')) {{ exit 0 }} else {{ exit 1 }}")
+               f"if ($r -and (($r | Get-NetFirewallApplicationFilter).Program -eq {_quoted(game_exe)})) {{ exit 0 }} else {{ exit 1 }}")
     try:
         return subprocess.run(['powershell', '-NoProfile', '-Command', command], timeout=30,
                               creationflags=NO_WINDOW).returncode == 0
@@ -246,11 +252,52 @@ def run_setup(game_exe):
     script = coop_dir() / 'setup-firewall.ps1'
     coop_dir().mkdir(parents=True, exist_ok=True)
     script.write_text(_firewall_script(game_exe), encoding='utf-8-sig')
-    command = (f"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
-               f"'-NoProfile -ExecutionPolicy Bypass -File \"{script}\"'")
-    result = subprocess.run(['powershell', '-NoProfile', '-Command', command], creationflags=NO_WINDOW)
-    if result.returncode != 0 or not setup_done(game_exe):
-        raise CoopError('Setup needs the Yes on the Windows prompt. Try Start hosting again.')
+    if not run_as_administrator('powershell.exe', f'-NoProfile -ExecutionPolicy Bypass -File "{script}"'):
+        raise CoopError('Co-op needs a Yes on the Windows administrator prompt (firewall rules); '
+                        'the answer was No. Try Start hosting again.')
+    if not setup_done(game_exe):
+        raise CoopError('The firewall rules were not made although Windows allowed the setup. '
+                        'A firewall program other than Windows Defender Firewall may manage them; '
+                        f'the setup script is {script}.')
+
+
+def run_as_administrator(program, parameters, verb='runas'):
+    """Runs program with administrator rights, hidden, and waits for it. False when the player
+    said No. The launcher asks Windows itself: a prompt requested by a process in the background
+    (it was a hidden PowerShell's Start-Process -Verb RunAs) opens only as a flashing taskbar
+    button, and players saw no prompt at all (#49). Asked by the launcher, whose window is in
+    front after the click, it opens over it."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ShellExecuteInfo(ctypes.Structure):
+        _fields_ = [('cbSize', wintypes.DWORD), ('fMask', ctypes.c_ulong), ('hwnd', wintypes.HWND),
+                    ('lpVerb', wintypes.LPCWSTR), ('lpFile', wintypes.LPCWSTR), ('lpParameters', wintypes.LPCWSTR),
+                    ('lpDirectory', wintypes.LPCWSTR), ('nShow', ctypes.c_int), ('hInstApp', wintypes.HINSTANCE),
+                    ('lpIDList', ctypes.c_void_p), ('lpClass', wintypes.LPCWSTR), ('hkeyClass', wintypes.HKEY),
+                    ('dwHotKey', wintypes.DWORD), ('hIconOrMonitor', wintypes.HANDLE), ('hProcess', wintypes.HANDLE)]
+
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(ShellExecuteInfo)]
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    window = user32.GetForegroundWindow()
+    owner = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
+    ctypes.windll.ole32.CoInitializeEx(None, 0x2 | 0x4)  # the shell wants COM on this thread
+    info = ShellExecuteInfo(cbSize=ctypes.sizeof(ShellExecuteInfo),
+                            fMask=0x40 | 0x100 | 0x400,  # NOCLOSEPROCESS, NOASYNC, FLAG_NO_UI (errors come back)
+                            hwnd=window if owner.value == os.getpid() else None,
+                            lpVerb=verb, lpFile=program, lpParameters=parameters, nShow=0)
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.get_last_error()
+        if error == 1223:  # ERROR_CANCELLED: the player said No
+            return False
+        raise CoopError(f'Windows could not run the co-op setup: {ctypes.FormatError(error)}')
+    if info.hProcess:
+        kernel32.WaitForSingleObject(wintypes.HANDLE(info.hProcess), 0xFFFFFFFF)
+        kernel32.CloseHandle(wintypes.HANDLE(info.hProcess))
+    return True
 
 
 # --- Hosting -----------------------------------------------------------------------------------------
