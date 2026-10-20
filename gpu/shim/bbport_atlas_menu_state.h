@@ -7,6 +7,8 @@ class BbAtlasMenuState {
 public:
     enum : uint32_t { Right=0x20,Up=0x10,Down=0x40,Left=0x80,Cross=0x4000,Circle=0x2000 };
     struct Result {uint32_t buttons;bool open=false,close=false,move=false;};
+    // How long the menu must be up before the tile takes input (and while it fades in).
+    static constexpr uint64_t settle_ms=180;
     bool focused=false;
     int anchor=2;
     uint32_t previous=0,blocked=0;
@@ -16,7 +18,7 @@ public:
     bool Settled(bool visible,uint64_t now) {
         if(!visible){was_visible=false;visible_since=0;return false;}
         if(!was_visible){was_visible=true;visible_since=now;}
-        return now-visible_since>=180;
+        return now-visible_since>=settle_ms;
     }
     Result Route(bool visible,int index,bool map_open,uint32_t buttons,uint32_t confirm,uint64_t now) {
         blocked&=buttons;

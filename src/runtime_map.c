@@ -58,7 +58,11 @@ static uintptr_t pointer(uintptr_t at) {
 int runtime_map_menu_open(void) {
     uintptr_t menu=pointer(menu_slot);int value=0;
     if(!menu || !read_at(menu+0x54,&value,sizeof(value)))return 0;
-    return value==2; /* Stable shown state, verified against the actual quick menu. */
+    if(value==2)return 1; /* Shown state from Start on, verified against the actual quick menu. */
+    /* After a submenu closes, manager+0x54 reads 0 with the quick menu still open:
+     * its list is then still in place (runtime_map_menu_state). */
+    BbMapMenu list;
+    return runtime_map_menu_state(&list) && list.supported;
 }
 uint32_t runtime_map_confirm_button(void) {
     /* The game uses its region predicate, not the platform enter-button setting.
@@ -90,10 +94,21 @@ int runtime_map_menu_state(BbMapMenu *out) {
        !read_at(list+0xae0,shape,sizeof(shape)))return 0;
     /* This native list is a four-row six-slot grid, with only three enabled
      * items on its first row. +0x98 is 1 while the list is interactive and 2
-     * while hidden behind nested dialogs; manager+0x54 stays 2 in both. */
+     * while hidden behind nested dialogs. manager+0x54 is 2 from Start on, but
+     * 0 again once a submenu (Inventory, ...) has closed, with the quick menu
+     * still open; 7 only while it opens. The list leaves main+0x80 (another
+     * vtable there) when the quick menu closes. */
     if(shape[0]!=24 || shape[3]!=6 || shape[4]!=4 || shape[1]<0 || shape[1]>=24 || shape[2]!=-1)return 0;
     if(main!=pointer(menu_main_slot) || list!=pointer(main+0x80))return 0;
-    out->supported=1;out->top_level=shown==2 && status==1;out->selected=shape[1];return 1;
+    /* main+0x98 counts the screens stacked at main+0x50.. (8 bytes each): 7 puts the quick
+     * menu's list (main+0x80) on top. Quit Game pushes an 8th (the fade to loading) while
+     * the list reads interactive again. list+0x10 holds the transition the game starts when
+     * the menu leaves (a submenu or closing), a few frames before the status changes or the
+     * list goes; it is clear while the menu stays. */
+    uint32_t screens=0;uintptr_t transition=0;
+    if(!read_at(main+0x98,&screens,sizeof(screens)) || !read_at(list+0x10,&transition,sizeof(transition)))return 0;
+    out->supported=1;out->top_level=(shown==2 || shown==0) && status==1 && screens==7;
+    out->leaving=transition!=0;out->selected=shape[1];return 1;
 }
 int runtime_map_location(BbMapLocation *out) {
     if (!out) return 0;

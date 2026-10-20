@@ -45,6 +45,25 @@ int main(void) {
     state=0;memcpy(menu+0x54,&state,4);assert(!runtime_map_menu_open());
     ptr(image,0x5562878,(void*)0x12345678);assert(!runtime_map_menu_open());
     ptr(image,0x5562878,menu);
+    /* The quick menu's list: after a submenu closes manager+0x54 reads 0 with the menu still
+     * open and interactive; the list leaving main+0x80 is what closes it. */
+    unsigned char *main_menu=calloc(1,0x100),*list=calloc(1,0xb00);assert(main_menu&&list);
+    ptr(image,0x5562870,main_menu);ptr(main_menu,0x80,list);ptr(list,0,image+0x539c680);
+    const int shape[6]={24,1,-1,6,4,0};memcpy(list+0xae0,shape,sizeof(shape));
+    uint32_t status=1;memcpy(list+0x98,&status,4);
+    uint32_t screens=7;memcpy(main_menu+0x98,&screens,4);
+    state=2;memcpy(menu+0x54,&state,4);assert(runtime_map_menu_state(&native_menu)&&native_menu.top_level&&native_menu.selected==1);
+    state=0;memcpy(menu+0x54,&state,4);assert(runtime_map_menu_state(&native_menu)&&native_menu.top_level);assert(runtime_map_menu_open());
+    status=2;memcpy(list+0x98,&status,4);assert(runtime_map_menu_state(&native_menu)&&!native_menu.top_level);assert(runtime_map_menu_open());
+    state=7;status=1;memcpy(menu+0x54,&state,4);memcpy(list+0x98,&status,4);assert(runtime_map_menu_state(&native_menu)&&!native_menu.top_level);
+    /* Quit Game: a screen goes over the list (8 stacked) while it reads interactive again. */
+    state=0;memcpy(menu+0x54,&state,4);assert(runtime_map_menu_state(&native_menu)&&native_menu.top_level&&!native_menu.leaving);
+    screens=8;memcpy(main_menu+0x98,&screens,4);assert(runtime_map_menu_state(&native_menu)&&!native_menu.top_level);
+    screens=7;memcpy(main_menu+0x98,&screens,4);
+    /* The game's transition pointer: the menu has started to leave. */
+    ptr(list,0x10,list);assert(runtime_map_menu_state(&native_menu)&&native_menu.leaving);ptr(list,0x10,NULL);
+    state=0;memcpy(menu+0x54,&state,4);ptr(list,0,image+0x100);assert(!runtime_map_menu_state(&native_menu)&&!runtime_map_menu_open());
+    ptr(image,0x5562870,NULL);free(list);free(main_menu);
     ptr(image,0x553e878,world);ptr(world,0x60,chr);ptr(chr,0x3b0,modules);ptr(modules,0x68,transform);
     ptr(chr,0x288,world);uint32_t block=0x18010000;memcpy(chr+0x3f8,&block,4);
     float pos[3]={-196.75f,-28.65f,65.39f},yaw=1.0f;memcpy(transform+0x1e0,pos,12);memcpy(transform+0x1d4,&yaw,4);
