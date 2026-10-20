@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later
  * cheat_no_stamina / cheat_stamina_out_of_combat: the game's "no stamina use" debug flag, live. */
 #include "runtime_stamina.h"
+#include "code_check.h"
 #include "gpu/bbgpu.h"
 #include <stdint.h>
 #include <string.h>
@@ -49,7 +50,7 @@ void runtime_stamina_bind(void *image, uint64_t size) {
     flag = NULL; base = 0; written = 0; last_hp = -1; combat_until = 0;
     if (!image || size < 0x553e880) return;
 #include "map_build_guard.inc"
-    if (memcmp((unsigned char *)image + BB_MAP_GUARD_OFFSET, bb_map_guard, sizeof(bb_map_guard))) return;
+    if (!bb_code_is((unsigned char *)image + BB_MAP_GUARD_OFFSET, bb_map_guard)) return;
     base = (uintptr_t)image;
     flag = (volatile unsigned char *)image + STAMINA_FLAG_RVA;
 }

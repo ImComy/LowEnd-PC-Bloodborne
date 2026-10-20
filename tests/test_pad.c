@@ -21,6 +21,7 @@ void bb_menu_pointer_back(void) {}
 uint32_t bb_menu_pointer_buttons(void) { return 0; }
 void bb_mouse_camera_note_stick(uint8_t x, uint8_t y) { (void)x; (void)y; }
 int bb_mouse_camera_stick_x(void) { return -1; }
+void runtime_stamina_tick(uint32_t buttons) { (void)buttons; }
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
     (void)table; (void)count; (void)name;
     return 0;
