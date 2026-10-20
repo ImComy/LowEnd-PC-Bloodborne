@@ -292,7 +292,12 @@ OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1920x1080', ('1920 × 
            ('1280x800', ('1280 x 800 (16:10)',)), ('2560x1080', ('2560 x 1080 (Ultrawide)',)),
            ('3440x1440', ('3440 x 1440 (Ultrawide)',)), ('5120x1440', ('5120 x 1440 (32:9)',)),
            ('5120x2160', ('5120 x 2160 (Ultrawide)',)), ('3840x1600', ('3840 x 1600 (Ultrawide)',)),
-           ('3840x1080', ('3840 x 1080 (32:9)',)), ('1080x1920', ('1080 x 1920 (Portrait)',))]
+           ('3840x1080', ('3840 x 1080 (32:9)',)), ('1080x1920', ('1080 x 1920 (Portrait)',)),
+           # 4:3 for CRT monitors (issue #34): narrower than 16:9 the camera keeps its vertical
+           # view and the HUD stays 16:9, centred (docs/aspect_ratio.md). In game: the custom slot.
+           ('1024x768', ('1024 x 768 (4:3)',)), ('1280x960', ('1280 x 960 (4:3)',)),
+           ('1440x1080', ('1440 x 1080 (4:3)',)), ('1600x1200', ('1600 x 1200 (4:3)',)),
+           ('1920x1440', ('1920 x 1440 (4:3)',))]
 # Ultrawide outputs: where the HUD's corner groups go (scripts/hud_layout.py at start).
 HUD_POSITIONS = [('100', ('Screen edges', 'У краёв экрана')), ('75', ('75%',)), ('50', ('Halfway', 'Посередине')),
                  ('25', ('25%',)), ('0', ('Centred (16:9)', 'По центру (16:9)'))]
