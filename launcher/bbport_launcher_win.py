@@ -89,6 +89,10 @@ def run_role(argv):
             stream.reconfigure(line_buffering=True)
         except (AttributeError, ValueError):
             pass
+    # The launcher may close (close on play) while run.py and its scripts still print.
+    sys.path.insert(0, str(PORT_DIR / 'scripts'))
+    import quiet_output
+    quiet_output.guard()
     if argv[0] == '--script':
         path, sys.argv = argv[1], argv[1:]
     else:
