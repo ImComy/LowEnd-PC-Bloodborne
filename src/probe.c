@@ -686,6 +686,10 @@ int main(int argc, char **argv) {
         }
     }
     if (!cpu_only) {
+        extern void runtime_stamina_bind(void *, uint64_t);
+        runtime_stamina_bind(image, size);
+    }
+    if (!cpu_only) {
         const char *respawn_fix = getenv("BB_RESPAWN_DELAY_FIX");
         if (respawn_fix && !strcmp(respawn_fix, "0")) {
             puts("Respawn loading: original minimum delay requested (BB_RESPAWN_DELAY_FIX=0)");

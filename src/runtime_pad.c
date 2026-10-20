@@ -31,6 +31,7 @@
 #include "menu_pointer.h"
 #include "gpu/bbgpu.h"
 #include "input_bindings.h"
+#include "runtime_stamina.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -531,6 +532,7 @@ static void sample_game(PadData *d) {
     if (d->buttons!=routed) d->touch_count=0;
     d->left_x=sampled_axes[0]; d->left_y=sampled_axes[1]; d->right_x=sampled_axes[2]; d->right_y=sampled_axes[3];
     d->l2=sampled_triggers[0]; d->r2=sampled_triggers[1];
+    runtime_stamina_tick(d->buttons);
 }
 
 static ABI int32_t pad_init(void) { pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock); return 0; }
