@@ -1121,15 +1121,15 @@ class LauncherBackend(QObject):
             return
         def work():
             try:
-                shutil.rmtree(core.UPDATE_DIR, ignore_errors=True)
+                if not core.remove_update_folder():
+                    raise OSError('an update is still being installed; try again in a minute')
                 core.UPDATE_DIR.mkdir(parents=True, exist_ok=True)
                 archive = core.UPDATE_DIR / 'update.zip'
                 request = urllib.request.Request(url, headers={'User-Agent': 'bbport-launcher'})
                 with urllib.request.urlopen(request, timeout=60) as reply, open(archive, 'wb') as out:
                     while chunk := reply.read(1 << 20):
                         out.write(chunk)
-                with zipfile.ZipFile(archive) as package:
-                    package.extractall(core.UPDATE_DIR / 'new')
+                core.extract_update(archive, core.UPDATE_DIR / 'new')
                 new = next((p.parent for p in (core.UPDATE_DIR / 'new').rglob('Bloodborne.exe')), None)
                 if not new:
                     raise OSError('Bloodborne.exe is missing from the download')
