@@ -240,6 +240,18 @@ static constexpr const BinaryInfo& SearchBinaryInfo(const u32* code) {
     UNREACHABLE_MSG("Shader binary info not found.");
 }
 
+// bbport: whether a program register points at the start of a program. Every program
+// Bloodborne binds begins with s_mov_b32 vcc_hi (all 9907 in its files and executable, and the
+// driver's embedded ones). A stale or wrong address does not, and SearchBinaryInfo above would
+// pair those bytes with the next program's footer up to 64 KiB on: translated under that
+// program's hash, they failed an assertion in the recompiler (GitHub issue #72) or stood in for
+// the real program for the rest of the session and in the shader cache. Callers skip the draw.
+static inline bool StartsWithProgram(const auto& sh) {
+    constexpr u32 token_mov_vcchi = 0xBEEB03FF;
+    const auto* code = sh.template Address<u32*>();
+    return code && code[0] == token_mov_vcchi;
+}
+
 static constexpr Shader::ShaderParams GetParams(const auto& sh) {
     const auto* code = sh.template Address<u32*>();
     const auto& bininfo = SearchBinaryInfo(code);
