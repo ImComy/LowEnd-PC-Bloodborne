@@ -23,6 +23,7 @@ void SetMouseCaptured(bool captured);
 static std::atomic<bool> g_menu_pointer{false}; // below: a menu shows the pointer
 static std::atomic<bool> g_window_focused{false};
 static std::atomic<int> g_window_points_w{0}, g_window_points_h{0};
+static bool g_pad_in_use = false; // window thread: the last input came from a controller
 
 namespace Frontend {
 
@@ -233,6 +234,14 @@ bool WindowSDL::PollEvents() {
     }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+            (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
+             (event.gaxis.value > 8000 || event.gaxis.value < -8000))) {
+            g_pad_in_use = true;
+        } else if (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                   event.type == SDL_EVENT_KEY_DOWN) {
+            g_pad_in_use = false;
+        }
         if (text_active && (event.type == SDL_EVENT_TEXT_INPUT || event.type == SDL_EVENT_KEY_DOWN)) {
             std::scoped_lock lock{text_mutex};
             if (event.type == SDL_EVENT_TEXT_INPUT) {
@@ -299,6 +308,11 @@ bool WindowSDL::PollEvents() {
         default:
             break;
         }
+    }
+    // Hidden while playing on a controller; the mouse camera's relative mode hides it on its own.
+    if (const bool show = !g_pad_in_use || !focused || text_active;
+        !mouse_captured && SDL_CursorVisible() != show) {
+        show ? SDL_ShowCursor() : SDL_HideCursor();
     }
     return is_open;
 }
