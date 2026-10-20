@@ -13,7 +13,10 @@
  *   it (a gamepad or bound keys) or the mouse has been still for half a second: controller play
  *   is the game's own code.
  * - Locked on, the game turns the camera; a mouse flick is then a right-stick flick, which
- *   switches targets.
+ *   switches targets. That is checked once a frame on the main thread (bb_on_main_frame), not
+ *   in the camera update: locked on, the update above does not run at all (0 a second), while
+ *   the lock field of the camera it last updated stays 1. The flick holds the stick for
+ *   FLICK_US, as a tap of a bound key does. BB_MOUSE_DEBUG=1 logs the lock and each flick.
  * - Through the monocular, the motion turns its view instead, at half the rate. */
 #include "mouse_camera.h"
 
@@ -24,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum {
     CAMERA_UPDATE = 0x143ceaa, /* vmovss xmm0, [r13+0x140]: image offsets of game 1.09 */
@@ -32,9 +36,10 @@ enum {
     PITCH_MAX = 0x1ec, PITCH_MIN = 0x1f0, PITCH_CONVERGE = 0x26c, YAW_CONVERGE = 0x270,
     STILL_UPDATES = 30,  /* the mouse lets go after this many updates without motion */
     STICK_UPDATES = 20,  /* ... and at once for this many after the stick turned the camera */
-    FLICK_SAMPLES = 6, FLICK_COOLDOWN = 15,
 };
-static const float COUNTS_PER_RADIAN = 900.0f, FLICK_COUNTS = 60.0f;
+#define FLICK_US 120000ull       /* the stick is held this long per flick */
+#define FLICK_COOLDOWN_US 300000ull /* motion after a flick is dropped this long: one flick, one switch */
+static const float COUNTS_PER_RADIAN = 900.0f, FLICK_DECAY_S = 0.1f; /* slow motion decays away */
 static const float PI = 3.14159265f, TAU = 6.28318531f;
 
 static const unsigned char update_code[9] = {0xc4, 0xc1, 0x7a, 0x10, 0x85, 0x40, 0x01, 0x00, 0x00};
@@ -50,9 +55,17 @@ static const struct {
 #define STORE_COUNT ((int)(sizeof(stores) / sizeof(*stores)))
 
 static BbSkip *g_skips[STORE_COUNT];
-static int g_skipping, g_active, g_cooldown;
-static float g_flick_counts;
-static volatile int g_stick_updates, g_flick; /* written by the pad read and the camera update */
+static int g_skipping, g_active;
+static float g_flick_counts;     /* main-frame tick only */
+static uint64_t g_cooldown_until;
+static volatile int g_stick_updates, g_flick_dir; /* written by the pad read, the camera update, the tick */
+static volatile uint64_t g_cam, g_cam_updates, g_flick_until;
+
+static uint64_t now_us(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u;
+}
 
 static int setting(const char *key, int fallback) {
     int value = fallback;
@@ -95,31 +108,20 @@ static int turn_monocular(float pitch, float yaw) {
 
 static BB_GUEST_ABI void on_camera_update(BbRegs *regs) {
     unsigned char *cam = (unsigned char *)(uintptr_t)regs->r13;
+    __atomic_store_n(&g_cam, regs->r13, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_cam_updates, 1, __ATOMIC_RELAXED);
     float dx = 0, dy = 0;
-    const int captured = bbgpu_mouse_captured();
-    if (captured) bbgpu_mouse_motion_take(&dx, &dy);
-    if (g_cooldown) --g_cooldown;
-    if (!captured || !setting("mouse_camera", 1)) {
+    /* Locked on, the game turns the camera and the motion is left to flick_tick. */
+    if (!bbgpu_mouse_captured() || !setting("mouse_camera", 1) || field(cam, LOCKED) == 1.0f) {
         g_active = 0;
         skip_stores(0);
         return;
     }
+    bbgpu_mouse_motion_take(&dx, &dy);
     const float scale = (float)setting("mouse_sensitivity", 10) / 10.0f;
     if (setting("mouse_invert_y", 0)) dy = -dy;
     const float pitch = dy / COUNTS_PER_RADIAN * scale, yaw = dx / COUNTS_PER_RADIAN * scale;
 
-    if (field(cam, LOCKED) == 1.0f) { /* the game turns the camera: flicks switch targets */
-        g_active = 0;
-        skip_stores(0);
-        g_flick_counts = dx ? g_flick_counts + dx : g_flick_counts * 0.9f;
-        if (!g_cooldown && fabsf(g_flick_counts) >= FLICK_COUNTS) {
-            __atomic_store_n(&g_flick, g_flick_counts > 0 ? FLICK_SAMPLES : -FLICK_SAMPLES, __ATOMIC_RELAXED);
-            g_flick_counts = 0;
-            g_cooldown = FLICK_COOLDOWN;
-        }
-        return;
-    }
-    g_flick_counts = 0;
     const int stick = __atomic_load_n(&g_stick_updates, __ATOMIC_RELAXED);
     if (stick) {
         __atomic_store_n(&g_stick_updates, stick - 1, __ATOMIC_RELAXED);
@@ -148,6 +150,48 @@ static BB_GUEST_ABI void on_camera_update(BbRegs *regs) {
     set_field(cam, YAW_CONVERGE, new_yaw);
 }
 
+/* Once a frame (main thread): locked on, sideways mouse motion adds up to a flick. It decays
+ * with FLICK_DECAY_S, so only a quick sweep past mouse_flick_threshold counts switches. */
+static void flick_tick(void) {
+    static int debug = -1, was_locked;
+    static uint64_t debug_next, debug_updates, last_tick;
+    if (debug < 0) debug = getenv("BB_MOUSE_DEBUG") && strcmp(getenv("BB_MOUSE_DEBUG"), "0");
+    const uint64_t now = now_us(), cam = __atomic_load_n(&g_cam, __ATOMIC_RELAXED);
+    const float dt = last_tick && now > last_tick ? (float)(now - last_tick) / 1e6f : 0.0f;
+    last_tick = now;
+    float lock_field = 0;
+    const int field_ok = cam && bb_read(cam + LOCKED, &lock_field, 4);
+    const int captured = bbgpu_mouse_captured() && setting("mouse_camera", 1);
+    const int locked = captured && field_ok && lock_field == 1.0f;
+    if (debug && now >= debug_next) {
+        const uint64_t updates = __atomic_load_n(&g_cam_updates, __ATOMIC_RELAXED);
+        printf("Mouse flick: captured=%d camera updates/s=%llu lock field=%.6f (read %d) locked=%d\n", captured,
+               (unsigned long long)(updates - debug_updates), lock_field, field_ok, locked);
+        debug_updates = updates;
+        debug_next = now + 1000000;
+    }
+    if (debug && locked != was_locked) printf("Mouse flick: lock %s\n", locked ? "on" : "off");
+    was_locked = locked;
+    if (!locked) {
+        g_flick_counts = 0;
+        return;
+    }
+    float dx = 0, dy = 0;
+    bbgpu_mouse_motion_take(&dx, &dy);
+    const int threshold = setting("mouse_flick_threshold", 300);
+    if (now < g_cooldown_until || threshold <= 0) {
+        g_flick_counts = 0;
+        return;
+    }
+    g_flick_counts = g_flick_counts * expf(-dt / FLICK_DECAY_S) + dx;
+    if (fabsf(g_flick_counts) < (float)threshold) return;
+    __atomic_store_n(&g_flick_dir, g_flick_counts > 0 ? 1 : -1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_flick_until, now + FLICK_US, __ATOMIC_RELAXED);
+    if (debug) printf("Mouse flick: %s (%.0f counts)\n", g_flick_counts > 0 ? "right" : "left", g_flick_counts);
+    g_flick_counts = 0;
+    g_cooldown_until = now + FLICK_COOLDOWN_US;
+}
+
 int bb_mouse_camera_install(void) {
     const char *env = getenv("BB_MOUSE_CAMERA");
     if (env && !strcmp(env, "0")) return 0;
@@ -170,15 +214,14 @@ int bb_mouse_camera_install(void) {
         printf("Mouse camera: %s\n", bb_hooks_error());
         return STORE_COUNT;
     }
+    bb_on_main_frame(flick_tick);
     printf("Mouse camera: installed (click the game window to use it)\n");
     return STORE_COUNT + 1;
 }
 
 int bb_mouse_camera_stick_x(void) {
-    const int flick = __atomic_load_n(&g_flick, __ATOMIC_RELAXED);
-    if (!flick) return -1;
-    __atomic_store_n(&g_flick, flick > 0 ? flick - 1 : flick + 1, __ATOMIC_RELAXED);
-    return flick > 0 ? 255 : 0;
+    if (now_us() >= __atomic_load_n(&g_flick_until, __ATOMIC_RELAXED)) return -1;
+    return __atomic_load_n(&g_flick_dir, __ATOMIC_RELAXED) > 0 ? 255 : 0;
 }
 
 void bb_mouse_camera_note_stick(uint8_t right_x, uint8_t right_y) {
