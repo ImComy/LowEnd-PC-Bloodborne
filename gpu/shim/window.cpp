@@ -310,7 +310,10 @@ bool WindowSDL::PollEvents() {
         }
     }
     // Hidden while playing on a controller; the mouse camera's relative mode hides it on its own.
-    if (const bool show = !g_pad_in_use || !focused || text_active;
+    // mouse_hide_cursor keeps it hidden over the game and its menus too (mouse-to-pad tools,
+    // #88), but not over the guide menu or the map, which are used with the pointer.
+    const bool hide_always = BbSettings::Get().mouse_hide_cursor.load() && !BbOverlay::ReleasesMouse();
+    if (const bool show = (!g_pad_in_use && !hide_always) || !focused || text_active;
         !mouse_captured && SDL_CursorVisible() != show) {
         show ? SDL_ShowCursor() : SDL_HideCursor();
     }

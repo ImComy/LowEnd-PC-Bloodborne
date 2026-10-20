@@ -52,9 +52,45 @@ Starting
 - Keyboard and mouse work alongside a controller. Default keys: WASD move, I/J/K/L camera
   (or click the window for the mouse camera), Space dodge, E interact, R blood vial, F item,
   C transform, left mouse attack, Shift + left mouse or V strong attack, right mouse firearm,
-  Q lock on, arrow keys d-pad, G gestures, T personal effects, Escape menu. Rebind with
-  key_<action>= lines in bbport.ini. Choosing Keyboard prompts in the launcher (it imports your
-  own PCBButtons download from Nexus Mods) switches to the keys its images show instead.
+  Q lock on, arrow keys d-pad, G gestures, T personal effects, Escape menu, hold Left Alt to
+  walk. Rebind with key_<action>= lines in bbport.ini (see "Key bindings" below). Choosing
+  Keyboard prompts in the launcher (it imports your own PCBButtons download from Nexus Mods)
+  switches to the keys its images show instead.
+- In the game's menus the mouse points and clicks; right click goes back. Hold the strong
+  attack modifier (Shift, or Ctrl with Keyboard prompts) and click to press the menus' L2 / R2
+  buttons instead: modifier + right click is L2, modifier + left click is R2 (for example the
+  Storage switch at a messenger).
+- Mouse camera speed is its own setting: launcher Settings > Controls > Mouse > Mouse
+  sensitivity (bbport.ini mouse_sensitivity, 10 = 1.0x, 1 to 50). The game's own camera speed
+  option changes the controller and the I/J/K/L keys only. "Hide the mouse cursor in the game"
+  (mouse_hide_cursor=1) keeps the pointer hidden for mouse-to-controller tools.
+
+Key bindings (bbport.ini)
+- One line per action, key_<action>=<keys>. A key is named as SDL names it ("W", "Left Alt",
+  "Left Shift", "Left Ctrl", "Space", "Return", "Backspace", "Escape", "Tab", "Up", "F1",
+  "Keypad 4"...). Mouse inputs: Mouse1 (left), Mouse2 (right), Mouse3 (middle), Mouse4,
+  Mouse5 (side buttons), WheelUp, WheelDown. An action takes one key and one mouse input,
+  separated by a comma; "none" unbinds it. A key given to one action is taken from any other.
+  Edit bbport.ini with the launcher and the game closed. Example:
+    key_walk=Left Alt
+    key_firearm=X, Mouse2
+    key_l3=none
+- Actions and their defaults (the PS4 button each one presses in brackets):
+    move_forward W, move_back S, move_left A, move_right D (left stick)
+    walk Left Alt (a gentle push of the left stick while held)
+    roll Space (Circle: dodge, hold to sprint)        lock_on Q (R3)
+    attack Mouse1 (R1)                                strong_attack V (R2)
+    strong_modifier Left Shift (turns attack into the strong attack)
+    transform C, Mouse3 (L1)                          firearm X, Mouse2 (L2)
+    blood_vial R (Triangle)                           use_item F (Square)
+    interact E (Cross)                                switch_item Down (d-pad down)
+    switch_right Right (d-pad right)                  switch_left Left (d-pad left)
+    dpad_up Up (d-pad up)                             gestures G (touchpad, left side)
+    personal_effects T (touchpad, right side)         menu Escape (Options)
+    look_up I, look_down K, look_left J, look_right L (right stick)
+    confirm Return (menu confirm)                     back Backspace (menu back)
+    l3 Left Ctrl (L3)
+- move_smoothing=60 sets how quickly WASD changes direction (100 turns smoothing off).
 - The game's System menu has a native Achievements section. Earned trophies also show an
   achievement popup and appear in the guide's Achievements section.
   In Achievements, "Trophy notifications" sets the popup's theme, sound and time on screen,

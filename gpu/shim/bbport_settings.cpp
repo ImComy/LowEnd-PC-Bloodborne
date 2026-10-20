@@ -80,6 +80,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.mouse_invert_y = i != 0;
     } else if (key == "mouse_menu") {
         v.mouse_menu = i != 0;
+    } else if (key == "mouse_hide_cursor") {
+        v.mouse_hide_cursor = i != 0;
     } else if (key == "model_lod") {
         v.model_lod = std::clamp(i, -2, 2);
     } else if (key == "live_resolution") {
@@ -251,7 +253,8 @@ void Save() {
                                      "object_motion", "reactive_scale", "reactive_threshold", "reactive_max",
                                      "debug_view", "show_fps", "fsr4_auto_exposure", "fsr4_invert_jitter",
                                      "model_lod", "output_res", "live_resolution",
-                                     "mouse_camera", "mouse_sensitivity", "mouse_invert_y", "mouse_menu"}) {
+                                     "mouse_camera", "mouse_sensitivity", "mouse_invert_y", "mouse_menu",
+                                     "mouse_hide_cursor"}) {
                 ours |= key == name;
             }
             for (int e = 0; e < EffectCount; ++e) ours |= key == Effects[e].key;
@@ -275,9 +278,9 @@ void Save() {
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
-    std::fprintf(file, "mouse_camera=%d\nmouse_sensitivity=%d\nmouse_invert_y=%d\nmouse_menu=%d\n",
+    std::fprintf(file, "mouse_camera=%d\nmouse_sensitivity=%d\nmouse_invert_y=%d\nmouse_menu=%d\nmouse_hide_cursor=%d\n",
                  int(v.mouse_camera.load()), v.mouse_sensitivity.load(), int(v.mouse_invert_y.load()),
-                 int(v.mouse_menu.load()));
+                 int(v.mouse_menu.load()), int(v.mouse_hide_cursor.load()));
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
@@ -316,6 +319,7 @@ bool Read(const Values& v, const std::string& k, int& out) {
     else if (k == "mouse_sensitivity") out = v.mouse_sensitivity.load();
     else if (k == "mouse_invert_y") out = v.mouse_invert_y.load();
     else if (k == "mouse_menu") out = v.mouse_menu.load();
+    else if (k == "mouse_hide_cursor") out = v.mouse_hide_cursor.load();
     else {
         for (int e = 0; e < EffectCount; ++e) {
             if (k == Effects[e].key) {
