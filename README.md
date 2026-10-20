@@ -44,7 +44,8 @@ of upcoming features are marked *Pre-release* on the
 - PC settings in the game's own System menu: PC Graphics, Display, Effects, Settings and
   Gameplay, Achievements, and Restart to Apply. Quit Game on the title screen.
 - The **Insert** / **L3+R3** guide: FPS, achievements with icons and Gamerscore, all settings,
-  mods and cheats. Achievement toasts when a trophy unlocks.
+  mods and cheats. Achievement toasts when a trophy unlocks, with your own sounds, pictures,
+  animations and texts if you like ([below](#custom-trophy-notifications)).
 
 **Controls**
 - Controller, and keyboard and mouse at the same time, with rebindable keys
@@ -119,6 +120,52 @@ base-game dump, dump your add-ons too: each is a folder named like `SPEXPANSIOND
 **Achievements.** Names, descriptions and Gamerscore need the trophy key from your own PS4 in
 `user\keys.json` (shadPS4's format, `{"TrophyKeySet":{"ReleaseTrophyKey":"..."}}`). Without it,
 achievements show their numbers and icons. Nothing syncs to PlayStation Network.
+
+## Custom trophy notifications
+
+In the guide (**Insert** / **L3+R3**), **Achievements > Trophy notifications** lets you pick a
+theme, set the sound and how long it stays on screen, and preview each grade. Previews don't
+unlock or save anything.
+
+- **Original banner**: the green banner at the bottom (default).
+- **Card**: a dark card at the top right. The platinum has a short animation.
+- **Card, cinematic platinum**: same, with a longer, brighter platinum.
+- **Corner popup**: rises from the bottom right corner, with the trophy's name and description.
+
+Turn off *Animate the platinum* to show the platinum's own artwork instead.
+
+![Trophy notifications: Card, Card with a cinematic platinum, Corner popup (example trophies)](docs/images/trophy-notifications.gif)
+
+You can also add your own files to `user\custom_trophy` (it's inside your saves folder, so move
+it along with them). None are needed and the port ships none.
+
+| File | What it does |
+|---|---|
+| `bronze`, `silver`, `gold`, `platinum` + `.mp3` `.wav` `.ogg` `.flac` `.m4a` `.opus` | Sound for that grade. `trophy.*` covers any grade without its own. Up to 20 seconds. |
+| `<grade>_anim.gif` (or `.apng` `.png` `.jpg` `.webp` `.bmp`) | Picture or animation for that grade in Card and Corner. Plays once and stops on the last frame. `trophy_anim.*` covers the rest. Up to 600 frames and 20 seconds. |
+| `<grade>_anim.ini` | `loop=1` repeats it, `delay_ms=` starts it later. `frames=`, `columns=` and `fps=` read the `.png` as a sprite sheet. |
+| `badge.png` | The disc on the right of the card. |
+| `font.ttf` (or `.otf`), `font-light.ttf` | Fonts for Card and Corner. Default on Windows: Segoe UI. |
+| `notifications.ini` | The guide's options, plus your own texts: `text_unlocked=`, `text_banner=`, `name_bronze=` … `name_platinum=`. Edit it with the game closed. |
+
+Sounds, pictures and grade names per grade need the trophy key (see *Achievements* above).
+Without it, only `trophy.*` is used on a real unlock; previews still show each grade.
+
+Example, Portuguese texts and a looping platinum:
+
+```text
+user\custom_trophy\
+├── notifications.ini      theme=card_cinematic
+│                          text_unlocked=Troféu conquistado!
+│                          name_platinum=Platina
+├── platinum_anim.gif
+├── platinum_anim.ini      loop=1
+├── platinum.ogg
+└── trophy.wav             (every other grade)
+```
+
+**Reload sounds** in the guide picks up new sounds. Everything else is read when the game
+starts. Files that can't be read are listed in `user\last_run.log`.
 
 ## Keyboard button prompts
 
