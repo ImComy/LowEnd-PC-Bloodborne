@@ -57,7 +57,9 @@ Starting
   own PCBButtons download from Nexus Mods) switches to the keys its images show instead.
 - The game's System menu has a native Achievements section. Earned trophies also show an
   achievement popup and appear in the guide's Achievements section.
-  In Achievements, "Preview achievement toast" tests the popup without unlocking anything.
+  In Achievements, "Trophy notifications" sets the popup's theme, sound and time on screen,
+  and previews each grade without unlocking anything. Your own sounds, pictures, animations
+  (GIF) and texts go in user\custom_trophy (README.md, Custom trophy notifications).
   Unlock dates are saved in user\trophies.txt. Trophy icons come from your own game folder.
   Names, descriptions, grades and Gamerscore require your own PS4 trophy key in
   user\keys.json (see README.md). Without it, the guide shows icons and IDs. No PSN sync.

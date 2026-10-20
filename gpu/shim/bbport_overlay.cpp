@@ -18,7 +18,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <deque>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -30,6 +29,7 @@
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
 #include "bbport_trophies.h"
+#include "bbport_trophy_toast.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_impl_vulkan.h"
@@ -98,16 +98,15 @@ float frame_ms_avg = 0.0f, last_present_ms = 0.0f;
 // Trophy events can arrive on the game thread while the present thread draws the overlay.
 std::mutex trophy_mutex;
 std::array<unsigned char, 128> trophies{};
-struct ToastEvent {
-    int id;
-    bool preview;
+std::unordered_map<int, std::unique_ptr<ImTextureData>> trophy_icons; // present thread only
+// Icons decoded ahead of their toast (the notifications' worker thread), taken by IconRef. Never
+// destroyed: the worker may still be decoding while the process exits.
+struct DecodedIcon {
+    std::vector<unsigned char> pixels;
+    int width = 0, height = 0;
 };
-std::deque<ToastEvent> toast_queue;
-std::atomic<int> queued_toasts{0};
-std::atomic<int> active_toast{-1};
-std::atomic<bool> active_toast_preview{false};
-int64_t toast_start_ms = 0; // present thread only
-std::unordered_map<int, std::unique_ptr<ImTextureData>> trophy_icons;
+std::mutex& decoded_mutex = *new std::mutex;
+auto& decoded_icons = *new std::unordered_map<int, DecodedIcon>;
 
 std::vector<unsigned char> DecodePng(const std::filesystem::path& path, int& width, int& height) {
     std::error_code ec;
@@ -151,14 +150,44 @@ std::vector<unsigned char> DecodePng(const std::filesystem::path& path, int& wid
     return pixels;
 }
 
+// Any thread (the notifications' worker, before the toast): the PNG decoded for IconRef, so the
+// present thread only uploads it.
+void PrefetchIcon(int id) {
+    {
+        std::scoped_lock lock{decoded_mutex};
+        if (decoded_icons.count(id)) return;
+    }
+    const auto entry = BbTrophies::Find(id);
+    DecodedIcon icon;
+    if (!entry.icon.empty()) icon.pixels = DecodePng(entry.icon, icon.width, icon.height);
+    std::scoped_lock lock{decoded_mutex};
+    decoded_icons.emplace(id, std::move(icon));
+}
+
 ImTextureRef IconRef(int id) {
     auto it = trophy_icons.find(id);
-    if (it != trophy_icons.end())
+    if (it != trophy_icons.end()) {
+        std::scoped_lock lock{decoded_mutex}; // decoded again for a toast: not needed after all
+        decoded_icons.erase(id);
         return it->second ? it->second->GetTexRef() : ImTextureRef{};
-    const auto entry = BbTrophies::Find(id);
+    }
     int width = 0, height = 0;
-    const auto pixels = entry.icon.empty() ? std::vector<unsigned char>{} :
-                        DecodePng(entry.icon, width, height);
+    std::vector<unsigned char> pixels;
+    bool prefetched = false;
+    {
+        std::scoped_lock lock{decoded_mutex};
+        if (auto found = decoded_icons.find(id); found != decoded_icons.end()) {
+            pixels = std::move(found->second.pixels);
+            width = found->second.width;
+            height = found->second.height;
+            decoded_icons.erase(found);
+            prefetched = true;
+        }
+    }
+    if (!prefetched) {
+        const auto entry = BbTrophies::Find(id);
+        if (!entry.icon.empty()) pixels = DecodePng(entry.icon, width, height);
+    }
     if (pixels.empty()) {
         trophy_icons.emplace(id, nullptr);
         return {};
@@ -1067,6 +1096,106 @@ void AchievementRow(const BbTrophies::Entry& entry) {
     ImGui::PopID();
 }
 
+// A section title that opens and closes with a chevron; `hint` shows on the right while closed.
+bool FoldSection(const char* title, const char* hint, bool* open) {
+    CloseRows();
+    ImGui::Dummy(ImVec2(0, Px(18.0f)));
+    const float h = ImGui::GetTextLineHeight() + Px(6.0f);
+    if (ImGui::InvisibleButton(title, ImVec2(ImGui::GetContentRegionAvail().x, h))) *open = !*open;
+    const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImU32 ink = ImGui::IsItemHovered() || ImGui::IsItemFocused() ? Ink::Text : Ink::Dim;
+    const float s = Px(4.5f);
+    const ImVec2 c(min.x + s, (min.y + max.y) * .5f);
+    // Pointing down when open, right when closed.
+    const ImVec2 down[3] = {ImVec2(c.x - s, c.y - s * .45f), ImVec2(c.x, c.y + s * .55f), ImVec2(c.x + s, c.y - s * .45f)};
+    const ImVec2 right[3] = {ImVec2(c.x - s * .45f, c.y - s), ImVec2(c.x + s * .55f, c.y), ImVec2(c.x - s * .45f, c.y + s)};
+    draw->AddPolyline(*open ? down : right, 3, ink, 0, Px(1.7f));
+    const float text_y = min.y + (h - ImGui::GetTextLineHeight()) * .5f;
+    draw->AddText(ImVec2(min.x + s * 3.2f, text_y), ink, title);
+    if (!*open && hint)
+        draw->AddText(ImVec2(max.x - ImGui::CalcTextSize(hint).x, text_y), Ink::Faint, hint);
+    Rule(draw, min.x, max.x, max.y + Px(8.0f));
+    ImGui::Dummy(ImVec2(0, Px(6.0f)));
+    return *open;
+}
+
+// Trophy notifications: theme, sound and timing, and previews that go through the same queue,
+// renderer and sounds as a real unlock (nothing is unlocked or saved). The texts, pictures and
+// animations come from files in user/custom_trophy (README.md).
+void ToastSection(const std::vector<BbTrophies::Entry>& entries) {
+    using BbToast::Theme;
+    static bool open = false; // closed: the page opens on the trophy list
+    if (!FoldSection("TROPHY NOTIFICATIONS", "Theme, sound and previews", &open)) return;
+    auto o = BbToast::GetOptions();
+    bool changed = false;
+    // The four looks, all in sight: one row each.
+    for (int i = 0; i < int(Theme::Count); ++i)
+        if (ChoiceRow(BbToast::ThemeLabel(Theme(i)), o.theme == Theme(i)) && o.theme != Theme(i)) {
+            o.theme = Theme(i);
+            changed = true;
+        }
+    changed |= Toggle("Mute the sound", &o.muted);
+    RowLabel("Volume", ImGui::GetFrameHeight());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::BeginDisabled(o.muted);
+    changed |= ImGui::SliderInt("##toast_volume", &o.volume, 0, 100, "%d%%");
+    ImGui::EndDisabled();
+    RowLabel("Time on screen", ImGui::GetFrameHeight());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::SliderFloat("##toast_hold", &o.hold_seconds, 0.0f, 20.0f,
+                                  o.hold_seconds < 0.05f ? "Theme default" : "%.1f s");
+    if (o.hold_seconds < 0.05f) o.hold_seconds = 0.0f;
+    if (o.theme == Theme::CardCinematic) {
+        RowLabel("Platinum light", ImGui::GetFrameHeight());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderInt("##toast_intensity", &o.cinematic_intensity, 0, 100, "%d%%");
+    }
+    if (o.theme != Theme::Original) {
+        changed |= Toggle("Animate the platinum", &o.platinum_animation);
+        Hint("Off: the platinum shows its own picture, like the other trophies.");
+        changed |= Toggle("Write the grade", &o.grade_label);
+    }
+    if (changed) BbToast::SetOptions(o);
+    CloseRows();
+
+    ImGui::Dummy(ImVec2(0, Px(6.0f)));
+    ImGui::BeginDisabled(entries.empty());
+    // A real trophy of the grade (a visible one when there is one), shown as an unlock would be.
+    // Without the trophy key no trophy has a grade: the first one is shown as that grade.
+    auto preview = [&](BbTrophies::Grade grade) {
+        const BbTrophies::Entry* pick = nullptr;
+        for (const auto& entry : entries)
+            if (entry.grade == grade && (!pick || (pick->hidden && !entry.hidden))) pick = &entry;
+        BbToast::Enqueue(pick ? pick->id : entries.front().id, true, int(grade));
+    };
+    using G = BbTrophies::Grade;
+    const std::pair<const char*, G> grades[] = {
+        {"Bronze", G::Bronze}, {"Silver", G::Silver}, {"Gold", G::Gold}, {"Platinum", G::Platinum}};
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float button_w = (ImGui::GetContentRegionAvail().x - spacing * 3) / 4;
+    for (int i = 0; i < 4; ++i) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(GradeColor(grades[i].second)));
+        if (ImGui::Button(grades[i].first, ImVec2(button_w, 0))) preview(grades[i].second);
+        ImGui::PopStyleColor();
+        if (i < 3) ImGui::SameLine();
+    }
+    const float half = (ImGui::GetContentRegionAvail().x - spacing) / 2;
+    if (ImGui::Button("All four in a row", ImVec2(half, 0)))
+        for (const auto& item : grades) preview(item.second);
+    ImGui::SameLine();
+    if (ImGui::Button("Three at once", ImVec2(-FLT_MIN, 0)))
+        for (int i = 0; i < 3; ++i) preview(G::Bronze);
+    ImGui::EndDisabled();
+    Note("Previews look and sound like an unlock; nothing is unlocked or saved.", Ink::Faint);
+    NoteF(Ink::Faint, "Sounds: %s", BbToast::SoundSummary().c_str());
+    NoteF(Ink::Faint, "Pictures: %s", BbToast::PictureSummary().c_str());
+    Note("Your own sounds, pictures, animations and texts go in user/custom_trophy (see README.md). "
+         "Sounds reload here; pictures when the game starts.", Ink::Faint);
+    if (ImGui::Button("Reload sounds")) BbToast::ReloadSounds();
+    ImGui::Dummy(ImVec2(0, Px(6.0f)));
+}
+
 void AchievementsTab() {
     const bool gallery = NativePcMenuAvailable();
     auto entries = BbTrophies::Entries();
@@ -1086,18 +1215,7 @@ void AchievementsTab() {
         ImGui::ProgressBar(total ? float(earned) / total : 0.0f,
                            ImVec2(-1, 9.0f * base_scale), "");
     }
-    ImGui::BeginDisabled(entries.empty());
-    if (ImGui::Button("Preview achievement toast", ImVec2(-1, 0))) {
-        const auto sample = std::find_if(entries.begin(), entries.end(), [](const auto& entry) {
-            return entry.grade == BbTrophies::Grade::Bronze && !entry.hidden;
-        });
-        const int id = sample == entries.end() ? entries.front().id : sample->id;
-        std::scoped_lock lock{trophy_mutex};
-        toast_queue.push_back({id, true});
-        ++queued_toasts;
-    }
-    ImGui::EndDisabled();
-    Note("Shows the unlock banner only; nothing is unlocked or saved.", Ink::Faint);
+    ToastSection(entries);
     if (!BbTrophies::HasMetadata())
         Note("Names and scores need the trophy key from your own PS4. Icons and local unlock history still work.");
     ImGui::Dummy(ImVec2(0, Px(8.0f)));
@@ -1467,29 +1585,10 @@ void FpsCounter() {
     ImGui::End();
 }
 
-void TrophyToast() {
-    const int64_t now = ClockMs();
-    if (active_toast.load() < 0) {
-        std::scoped_lock lock{trophy_mutex};
-        if (toast_queue.empty()) return;
-        active_toast = toast_queue.front().id;
-        active_toast_preview = toast_queue.front().preview;
-        toast_queue.pop_front();
-        --queued_toasts;
-        toast_start_ms = now;
-    }
-    constexpr int64_t kFadeInMs = 320, kHoldMs = 5000, kFadeOutMs = 420;
-    int64_t elapsed = now - toast_start_ms;
-    if (elapsed >= kFadeInMs + kHoldMs + kFadeOutMs) {
-        active_toast = -1;
-        if (queued_toasts.load() > 0) TrophyToast();
-        return;
-    }
-    const float appear = std::clamp(float(elapsed) / kFadeInMs, 0.0f, 1.0f);
-    const float disappear = std::clamp(float(kFadeInMs + kHoldMs + kFadeOutMs - elapsed) /
-                                            kFadeOutMs, 0.0f, 1.0f);
-    const float alpha = std::min(appear, disappear);
-    const auto entry = BbTrophies::Find(active_toast.load());
+// The notifications' Original theme (BbToast draws the other themes and keeps the queue): the
+// green banner at the bottom. alpha: opacity; appear: 0 -> 1 as it fades in and rises.
+void TrophyBanner(int id, const char* first_line, float alpha, float appear) {
+    const auto entry = BbTrophies::Find(id);
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float w = std::min(590.0f * base_scale, viewport->WorkSize.x - 24.0f * base_scale);
     const float h = 92.0f * base_scale;
@@ -1517,8 +1616,7 @@ void TrophyToast() {
     const float text_x = pos.x + 103.0f * base_scale;
     draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.03f,
                   ImVec2(text_x, pos.y + 19.0f * base_scale),
-                  IM_COL32(255, 255, 255, int(255 * alpha)),
-                  active_toast_preview.load() ? "Achievement preview" : "Achievement unlocked");
+                  IM_COL32(255, 255, 255, int(255 * alpha)), first_line);
     const std::string title = entry.score >= 0 ?
         std::to_string(entry.score) + "G - " + entry.name : entry.name;
     draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.12f,
@@ -1623,6 +1721,9 @@ void ConfigureContext() {
             }
         }
     }
+    // Trophy notifications: their fonts, options, pictures and sounds (decoded now, not at the
+    // first toast).
+    BbToast::Start(io.Fonts, &IconRef, &PrefetchIcon, &TrophyBanner);
 }
 
 // One frame's windows, between NewFrame and Render (Render; also the offscreen preview).
@@ -1650,8 +1751,8 @@ void DrawWindows(float display_height) {
     if (text_entry_active) {
         TextEntryBox();
     }
-    if (active_toast.load() >= 0 || queued_toasts.load() > 0) {
-        TrophyToast();
+    if (BbToast::Busy()) {
+        BbToast::Draw(base_scale);
     }
 }
 
@@ -1689,7 +1790,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     info.Device = instance.GetDevice();
     info.QueueFamily = instance.GetGraphicsQueueFamilyIndex();
     info.Queue = instance.GetGraphicsQueue();
-    info.DescriptorPoolSize = 256; // font atlas plus the game's trophy icons
+    info.DescriptorPoolSize = 256; // font atlas, the game's trophy icons, the notifications' pictures
     info.MinImageCount = std::max(image_count, 2u);
     info.ImageCount = std::max(image_count, 2u);
     info.UseDynamicRendering = true;
@@ -1849,7 +1950,7 @@ bool HandleEvent(const SDL_Event& event) {
 bool Visible() {
     return initialized && (menu_open || text_entry_active || BbSettings::Get().show_fps ||
                            BbMap::IsOpen() || BbAtlasMenu::Visible() || BbAtlasMenu::Animating() ||
-                           active_toast.load() >= 0 || queued_toasts.load() > 0);
+                           BbToast::Busy());
 }
 
 bool CapturesInput() {
@@ -1882,10 +1983,7 @@ void LoadTrophies(const std::int64_t* timestamps, unsigned count) {
         for (unsigned i = 0; i < std::min<unsigned>(count, trophies.size()); ++i)
             trophies[i] = timestamps[i] ? 1 : 0;
     }
-    toast_queue.clear();
-    queued_toasts = 0;
-    active_toast = -1;
-    active_toast_preview = false;
+    BbToast::Clear();
 }
 
 void TrophyUnlocked(int id) {
@@ -1894,11 +1992,7 @@ void TrophyUnlocked(int id) {
         std::scoped_lock lock{trophy_mutex};
         trophies[id] = 1;
     }
-    {
-        std::scoped_lock lock{trophy_mutex};
-        toast_queue.push_back({id, false});
-        ++queued_toasts;
-    }
+    BbToast::Enqueue(id, false);
 }
 
 // Called for every presented image: the interval for the FPS readout and BB_FPS_LOG.

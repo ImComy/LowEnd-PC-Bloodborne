@@ -11,12 +11,30 @@
 #undef BbOverlay
 
 #include "imgui_impl_sdlrenderer3.h"
+#include "bbport_trophy_toast.h"
 
 using namespace BbOverlayPreview;
 
 // What bb-probe provides to the library; the preview never restarts or runs game code.
 extern "C" void runtime_restart(void) {}
 extern "C" std::uint64_t runtime_disabled_optimizations = 0;
+// Game state the map, the atlas and the menu sounds read: nothing is open, nothing is known.
+extern "C" {
+#include "../../src/runtime_atlas_state.h"
+#include "../../src/runtime_map.h"
+#include "../../src/runtime_menu_sound.h"
+int runtime_atlas_flag(uint32_t) { return 0; }
+int runtime_map_location(BbMapLocation*) { return 0; }
+uintptr_t runtime_atlas_player_token(void) { return 0; }
+int runtime_map_menu_open(void) { return 0; }
+int runtime_map_menu_state(BbMapMenu*) { return 0; }
+uint32_t runtime_map_confirm_button(void) { return 0; }
+void runtime_audio_menu_event(int) {}
+void runtime_audio_menu_stats(BbMenuSoundStats*) {}
+int runtime_atlas_travel_request(const BbAtlasTravelDestination*) { return 0; }
+int runtime_atlas_travel_status(void) { return 0; }
+int runtime_atlas_travel_supported(void) { return 0; }
+}
 
 // The game frame behind the guide: a PNG of any size (avcodec, as DecodePng without its limit).
 static SDL_Texture* LoadBackground(SDL_Renderer* renderer, const char* path) {
@@ -60,7 +78,8 @@ int main(int argc, char** argv) {
     // The trophy list from the game folder (read only), unlocks from a scratch folder; three earned.
     if (const char* game = std::getenv("BB_GAME_DIR")) {
         const char* user = std::getenv("BB_USER_DIR");
-        BbTrophies::Configure(game, user ? user : ".", 1);
+        const char* language = std::getenv("BB_PREVIEW_LANG");
+        BbTrophies::Configure(game, user ? user : ".", language ? std::atoi(language) : 1);
         const std::int64_t unlocked[] = {1760000000, 0, 1760100000, 0, 0, 0, 1760200000};
         BbTrophies::LoadUnlocks(unlocked, 7);
     }
@@ -99,12 +118,66 @@ int main(int argc, char** argv) {
             else if (k == "a") keys.push_back(ImGuiKey_GamepadFaceDown);
         }
     }
+    // A trophy toast alone (the guide closed): BB_PREVIEW_TOAST=1..4 (bronze..platinum) or
+    // BB_PREVIEW_TOAST_ID, BB_PREVIEW_TOAST_MS its time since it started, BB_PREVIEW_THEME original,
+    // card, card_cinematic or corner, BB_PREVIEW_FPS the frame rate that time is reached at (frames drawn
+    // on the way), BB_PREVIEW_BENCH=1 every frame of the whole toast at that rate, then the draw
+    // cost. Pictures and sounds come from BB_GPU_USER_DIR/custom_trophy, as in the game.
+    const char* toast_grade = std::getenv("BB_PREVIEW_TOAST");
+    const char* toast_id = std::getenv("BB_PREVIEW_TOAST_ID");
+    const bool toast = toast_grade || toast_id;
+    const double toast_ms = std::getenv("BB_PREVIEW_TOAST_MS") ? std::atof(std::getenv("BB_PREVIEW_TOAST_MS")) : 1500.0;
+    const double toast_fps = std::getenv("BB_PREVIEW_FPS") ? std::atof(std::getenv("BB_PREVIEW_FPS")) : 0.0;
+    const bool toast_bench = std::getenv("BB_PREVIEW_BENCH") != nullptr;
+    auto enqueue_grade = [](int grade) { // as the guide's preview buttons
+        const auto entries = BbTrophies::Entries();
+        for (const auto& entry : entries)
+            if (int(entry.grade) == grade) {
+                BbToast::Enqueue(entry.id, true, grade);
+                return;
+            }
+        if (!entries.empty()) BbToast::Enqueue(entries.front().id, true, grade); // no key: no grades
+    };
+    if (toast) {
+        menu_open = false;
+        if (const char* theme = std::getenv("BB_PREVIEW_THEME"))
+            for (int i = 0; i < int(BbToast::Theme::Count); ++i)
+                if (std::string(theme) == BbToast::ThemeKey(BbToast::Theme(i))) BbToast::SetThemeOverride(BbToast::Theme(i));
+        BbToast::SetClockOverride(0.0);
+        if (toast_id) BbToast::Enqueue(std::atoi(toast_id), false);
+        else enqueue_grade(std::atoi(toast_grade));
+    }
+    auto toast_frame = [&](double ms) {
+        BbToast::SetClockOverride(ms);
+        io.DisplaySize = ImVec2(float(width), float(height));
+        io.DeltaTime = 1.0f / 60.0f;
+        ImGui_ImplSDLRenderer3_NewFrame();
+        ImGui::NewFrame();
+        DrawWindows(float(height));
+        ImGui::Render();
+    };
+    if (toast) {
+        SDL_Delay(500); // the worker's sounds and artwork, as in the game
+        toast_frame(0.0); // starts the toast at t = 0
+        if (toast_fps > 0.0) {
+            const double step = 1000.0 / toast_fps;
+            const double until = toast_bench ? 20000.0 : toast_ms;
+            for (double t = step; t < until && (BbToast::Busy() || !toast_bench); t += step) toast_frame(t);
+            if (toast_bench) {
+                const auto stats = BbToast::Stats();
+                std::printf("Toast draw at %.0f FPS: %u frames, avg %.1f us, max %.1f us, last %u vertices\n",
+                            toast_fps, stats.frames, stats.avg_us, stats.max_us, stats.vertices);
+                return 0;
+            }
+        }
+    }
     const int frames = 3 + int(keys.size()) * 4;
     for (int frame = 0; frame < frames; ++frame) { // layouts settle over a frame or two
         io.DisplaySize = ImVec2(float(width), float(height));
         io.DeltaTime = 1.0f / 60.0f;
         if (frame >= 2 && (frame - 2) / 4 < int(keys.size()) && (frame - 2) % 4 < 2)
             io.AddKeyEvent(keys[(frame - 2) / 4], (frame - 2) % 4 == 0);
+        if (toast) BbToast::SetClockOverride(toast_ms);
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui::NewFrame();
         DrawWindows(float(height));

@@ -292,6 +292,11 @@ add_executable(trophy-data-test EXCLUDE_FROM_ALL ../tests/test_trophy_data.cpp
     shim/bbport_trophies.cpp)
 target_include_directories(trophy-data-test PRIVATE shadps4 shim)
 target_compile_options(trophy-data-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_executable(trophy-toast-test EXCLUDE_FROM_ALL ../tests/test_trophy_toast.cpp
+    shim/bbport_trophy_toast_model.cpp shim/bbport_trophy_media.cpp)
+target_include_directories(trophy-toast-test PRIVATE shim)
+target_compile_options(trophy-toast-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(trophy-toast-test PRIVATE PkgConfig::FFMPEG)
 if (WIN32)
     add_executable(trophy-history-test EXCLUDE_FROM_ALL ../tests/test_runtime_trophies.c
         ../src/runtime_trophies.c)
