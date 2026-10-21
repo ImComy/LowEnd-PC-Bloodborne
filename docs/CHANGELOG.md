@@ -4,8 +4,67 @@ Windows releases of this fork, newest first. Each is on the
 [releases page](https://github.com/Jgamrot/bloodborne_pc/releases) as `bbport-windows.zip`.
 Planned work is in [ROADMAP.md](ROADMAP.md).
 
-## Unreleased (1.9.8)
+## 2.0
 
+Community pull requests, fixes for many reported issues, 120/144 FPS presets, and a port that
+ships no game code. Everything from the unreleased 1.9.8 is included (listed further down).
+
+**From contributors**
+
+- **Discord Rich Presence** (erezeth, PR #77): your area, boss fight, level, Blood Echoes and
+  Insight on your Discord profile. Off by default: create `companions.json` next to
+  Bloodborne.exe with `{"enabled": ["Discord Rich Presence"]}` (see README-Windows.txt). It only
+  reads the game's memory.
+- **Trophy notifications** (GabrielTeles845, PR #115): themes (Original banner, Card, Corner
+  popup), sounds, time on screen and previews in the guide under *Achievements → Trophy
+  notifications*; your own sounds, GIFs, fonts and texts in `<saves>/custom_trophy`. The default
+  stays the green banner with no sound.
+- **Stamina cheats** (xiaodoudou, PR #101): no stamina use, always or only out of combat; they
+  switch on and off without a restart.
+- **Hunter's Atlas** (xiaodoudou, PR #96): the open map stays fast with fog, pickups and close
+  zoom, and the Map tile follows the game's menu after submenus and Quit Game.
+- **Frame generation** (xiaodoudou, PR #98): FSR 3.1 frame generation no longer leaks video
+  memory (about 60 MiB a second, until the device was lost), and one long hitch no longer pauses it.
+- **Striped shadows** in Chalice Dungeons on NVIDIA with an old shader cache are gone
+  (xiaodoudou, PR #97).
+- **Controller play hides the mouse cursor** (xiaodoudou, PR #102).
+- **FSR 4 on 32:9 and 8K outputs** (MDoloresGui, PR #87, issue #81): the launcher downloads the
+  4320 tier too (about 45 MB in all).
+- **Co-op finds Tailscale** wherever it is installed (danyshs, PR #111).
+
+**Fixed issues**
+
+- Mouse camera with the "No camera auto-rotation" tweak on (#63, #108): both work together now.
+- Hunter's Atlas: left click no longer jumps to the next lamp, and clicking a lamp travels to it (#41).
+- Mouse in menus: hold the strong-attack modifier (Shift, or Ctrl with Keyboard prompts) and
+  click for R2 / right click for L2, e.g. to switch to Storage (#64).
+- *Settings → Controls → Mouse → Hide the mouse cursor in the game* for mouse-to-controller
+  tools; README-Windows.txt lists every `key_*` binding and the mouse sensitivity setting (#88, #21).
+- Closing the launcher while the game starts no longer stops it with "Errno 22" (#84, #91).
+- The in-launcher updater delivers every new file (#38); the release zip uses forward slashes, so
+  it unpacks on Linux and under Proton (#75).
+- Play Bloodborne.exe starts a Bloodborne.exe set to run as administrator (#46).
+- A Game of the Year PKG already at 1.09 installs without a separate update PKG (#43).
+- Co-op: the firewall prompt opens in front of the launcher (#49), and account errors say what
+  went wrong (server not up yet, old invite, name taken, name already signed in) (#28).
+- The log names the upscaler you chose; it no longer says "FSR 3.1 (on)" while FSR 4 runs (#117).
+- Mods with their own menu text (Restored Change Appearance) no longer turn the PC menu's rows
+  into numbers (#48).
+- A shader register that does not point at a shader skips the draw instead of crashing (#72).
+- 4:3 output resolutions for CRT monitors: 1024×768 to 1920×1440 (#34).
+
+### From 1.9.8 (never released on its own)
+
+- **120 and 144 FPS presets**, with fixed frame steps, effect rate, cloth and follow camera
+  corrected above 60 FPS; an optional frame-limiter grid (Supermedo).
+- **Monitor choice and exclusive fullscreen** (Supermedo PRs #66, #68); **Circle confirms** for
+  the Japanese/Asian layout (PR #17); **Brazilian Portuguese** text and voices (PR #20, issue #35).
+- **Stability:** buffer arenas no longer migrate (missing objects, device lost); a faulting
+  resource-table read skips that draw; a garbage PM4 header drops the rest of its buffer; a VRAM
+  reserve on 4 GB cards; guest handles stay below 1 TiB (#51); 5056 MiB of direct memory when
+  Windows refuses more; PC-sized graphics heaps for every player.
+- **Debug menu fonts** are found in `font` or `adhoc/font` in any case; missing fonts leave the menu out.
+- A plain ELF eboot.bin (no SELF wrapper) is accepted.
 - **Button prompt mods are no longer in the download.** Dommo's Xbox prompts and JinkiJinn's
   PCBButtons are edits of the game's own menu file, so the port stops shipping them. Choosing
   Xbox or Keyboard in *Settings → Controls → Button prompts* opens the mod's Nexus page
