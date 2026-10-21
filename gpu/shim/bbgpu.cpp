@@ -5,7 +5,9 @@
 #include <cstdio>
 #include "bbport_settings.h"
 #include "bbport_copy.h"
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/resource.h>
 #endif
 #include "bbport_toggles.h"
@@ -240,6 +242,10 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         }
         LOG_INFO(Frontend, "Window closed by user");
         std::fflush(stdout);
+#ifdef _WIN32
+        // Not ExitProcess: DLL detach code (nvngx_dlssg.dll) can wait on threads it already killed.
+        TerminateProcess(GetCurrentProcess(), 0);
+#endif
         std::_Exit(0);
     });
     g_window_thread.detach();
