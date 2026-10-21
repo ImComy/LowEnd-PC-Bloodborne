@@ -42,6 +42,7 @@ inline bool NativeViewport(float width, float height) {
 constexpr bool MovieShader(uint64_t hash) {
     return hash == 0x34e8a281 || hash == 0x81d336ce || hash == 0x09957251 ||
            hash == 0x24042a9b || hash == 0xa400228b ||
+           hash == 0x17e76c08 || // solid-color title/loading fade, also drawn without text/icons
            // The title menu while its highlight animates: without these its frames alternated
            // between 1080p and output size above 1080p (flicker). From parsifal295 (PR #56).
            hash == 0xbb4d5f8c || hash == 0xe94b5b06 || hash == 0x9951d199 ||

@@ -1418,8 +1418,12 @@ void TemporalUpscaler::OnColorTarget(VideoCore::ImageId color) {
     }
 }
 
+bool TemporalUpscaler::IsUiShader(u64 vs_hash) const {
+    return vs_hash == ui_trigger_vs || UiComposition::MovieShader(vs_hash);
+}
+
 void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
-                              VideoCore::ImageId depth, bool native_viewport) {
+                              VideoCore::ImageId depth) {
     if (!Scaled() && vs_hash == ui_trigger_vs) {
         // The UI starts: its target holds the finished picture without UI (frame generation).
         done_this_frame = true;
@@ -1430,13 +1434,6 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
     if (hudless_pending && color) {
         hudless_pending = false;
         CaptureHudless(color);
-    }
-    // In a native-size 3D scene without temporal upscaling or frame generation,
-    // the guest renders the HUD directly into the final color target. Menu-only
-    // frames still need the compositor to black out unused movie-stage borders.
-    if (Scaled() && render_width == target_width && render_height == target_height &&
-        !Active() && (!frame_generator || !frame_generator->Wanted()) && camera_motion.Depth()) {
-        return;
     }
     // bbport: a UI draw without a color target (a Scaleform mask: color writes off) writes the
     // stencil the next UI draws test, so it belongs in the UI's output-size depth like them. In
@@ -1469,9 +1466,9 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
         return;
     }
     const auto& image = texture_cache.GetImage(color);
-    const bool movie = vs_hash == ui_trigger_vs || UiComposition::MovieShader(vs_hash) ||
-                       (scaled_session && native_viewport);
-    const bool ui_draw = movie &&
+    // Full-screen scene passes can have the movie's viewport too. Only movie shaders
+    // begin UI composition, before their first stencil or color write.
+    const bool ui_draw = IsUiShader(vs_hash) &&
         (image.info.pixel_format == vk::Format::eR8G8B8A8Unorm ||
          image.info.pixel_format == vk::Format::eR8G8B8A8Srgb) &&
         RenderTarget(image.info.size.width, image.info.size.height) &&

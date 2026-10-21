@@ -8,6 +8,8 @@ int main() {
     // Title/loading menus have no depth/camera. UI must still go to the native target.
     assert(Choose(true, true, false, true) == Background::Copy);
     assert(Choose(true, true, false, false) == Background::Copy);
+    // The title/loading fade can be the frame's only color draw.
+    assert(Choose(true, MovieShader(0x17e76c08), false, true) == Background::Copy);
     // In-game HUD: first reconstruct the scene, then draw the native UI over it.
     assert(Choose(true, true, true, true) == Background::Temporal);
     // Runtime FSR disable/failure must not change UI resolution.
