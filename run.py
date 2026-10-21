@@ -484,6 +484,10 @@ def main():
 
 
 if __name__ == '__main__':
+    # The launcher reading this output may close before the game starts.
+    sys.path.insert(0, str(PORT / 'scripts'))
+    import quiet_output
+    quiet_output.guard()
     try:
         sys.exit(main())
     except KeyboardInterrupt:

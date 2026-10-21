@@ -159,8 +159,19 @@ if [[ -n $game_files ]]; then
 fi
 mkdir -p dist
 rm -f dist/bbport-windows.zip
-(cd out/stage && powershell -NoProfile -Command \
-    "Compress-Archive -Path bbport-windows -DestinationPath ../../dist/bbport-windows.zip")
+# Zip entries need forward slashes: Windows PowerShell's Compress-Archive writes backslashes,
+# which other unzip tools (Linux, Proton) turn into flat files named "bbport-windows\_internal\..."
+# (issue #75).
+"$venv/Scripts/python.exe" - out/stage dist/bbport-windows.zip <<'PY'
+from pathlib import Path
+import sys, zipfile
+
+stage, archive = Path(sys.argv[1]), Path(sys.argv[2])
+with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
+    for path in sorted((stage / 'bbport-windows').rglob('*')):
+        if path.is_file():
+            package.write(path, path.relative_to(stage).as_posix())
+PY
 
 # Refresh dist/bbport-windows, keeping what players create there (saves, settings, mods), and
 # only while nothing runs from it: deleting a running launcher's files breaks it.

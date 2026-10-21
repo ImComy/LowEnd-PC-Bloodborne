@@ -633,7 +633,11 @@ class LauncherBackend(QObject):
         if Path(source).suffix.casefold() == '.pkg':
             update, _ = QFileDialog.getOpenFileName(
                 None, 'Step 2: choose the plain 1.09 UPDATE PKG (not 720p or 1080p)', str(Path(source).parent), 'Update PKG (*.pkg)')
-            if not update:
+            # Game of the Year PKGs may already hold 1.09: no separate update then (#43).
+            if not update and QMessageBox.question(
+                    None, 'No update PKG',
+                    f'Is {Path(source).name} already updated to 1.09 (a PKG with the update merged in)?\n\n'
+                    'Yes installs it without an update PKG; the installer checks the version.') != QMessageBox.Yes:
                 return
         parent = QFileDialog.getExistingDirectory(
             None, 'Last step: choose where to create the CUSA03173 game folder', str(Path.home()))
@@ -1121,15 +1125,15 @@ class LauncherBackend(QObject):
             return
         def work():
             try:
-                shutil.rmtree(core.UPDATE_DIR, ignore_errors=True)
+                if not core.remove_update_folder():
+                    raise OSError('an update is still being installed; try again in a minute')
                 core.UPDATE_DIR.mkdir(parents=True, exist_ok=True)
                 archive = core.UPDATE_DIR / 'update.zip'
                 request = urllib.request.Request(url, headers={'User-Agent': 'bbport-launcher'})
                 with urllib.request.urlopen(request, timeout=60) as reply, open(archive, 'wb') as out:
                     while chunk := reply.read(1 << 20):
                         out.write(chunk)
-                with zipfile.ZipFile(archive) as package:
-                    package.extractall(core.UPDATE_DIR / 'new')
+                core.extract_update(archive, core.UPDATE_DIR / 'new')
                 new = next((p.parent for p in (core.UPDATE_DIR / 'new').rglob('Bloodborne.exe')), None)
                 if not new:
                     raise OSError('Bloodborne.exe is missing from the download')

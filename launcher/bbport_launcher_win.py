@@ -89,6 +89,10 @@ def run_role(argv):
             stream.reconfigure(line_buffering=True)
         except (AttributeError, ValueError):
             pass
+    # The launcher may close (close on play) while run.py and its scripts still print.
+    sys.path.insert(0, str(PORT_DIR / 'scripts'))
+    import quiet_output
+    quiet_output.guard()
     if argv[0] == '--script':
         path, sys.argv = argv[1], argv[1:]
     else:
@@ -2319,7 +2323,8 @@ class Launcher:
 
         def work():
             try:
-                shutil.rmtree(UPDATE_DIR, ignore_errors=True)
+                if not remove_update_folder():
+                    raise OSError('an update is still being installed; try again in a minute')
                 UPDATE_DIR.mkdir(parents=True, exist_ok=True)
                 archive = UPDATE_DIR / 'update.zip'
                 request = urllib.request.Request(url, headers={'User-Agent': 'bbport-launcher'})
@@ -2332,8 +2337,7 @@ class Launcher:
                         if percent != shown:
                             shown = percent
                             self.ui_calls.put(lambda p=percent: progress(p))
-                with zipfile.ZipFile(archive) as package:
-                    package.extractall(UPDATE_DIR / 'new')
+                extract_update(archive, UPDATE_DIR / 'new')
                 archive.unlink()
                 new = next((p.parent for p in (UPDATE_DIR / 'new').rglob('Bloodborne.exe')), None)
                 if not new:
@@ -2555,24 +2559,83 @@ def start_quiet_update_check(settings):
     return timer
 
 
+def extract_update(archive, folder):
+    """Unpacks the downloaded release into folder. Entry names may use either separator:
+    releases up to 1.9.7 were zipped by Windows PowerShell, which writes backslashes (#75)."""
+    folder = Path(folder)
+    with zipfile.ZipFile(archive) as package:
+        for entry in package.infolist():
+            parts = [part for part in entry.filename.replace('\\', '/').split('/') if part not in ('', '.')]
+            if not parts or '..' in parts or ':' in parts[0]:
+                continue  # nothing outside the folder
+            path = folder.joinpath(*parts)
+            if entry.filename.endswith(('/', '\\')):
+                path.mkdir(parents=True, exist_ok=True)
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with package.open(entry) as source, open(path, 'wb') as out:
+                shutil.copyfileobj(source, out, 1 << 20)
+
+
+def update_installing_mark():
+    return UPDATE_DIR / 'installing'
+
+
+def remove_update_folder():
+    """Removes UPDATE_DIR unless an update is being installed from it: the installer keeps
+    update_installing_mark() open, so it cannot be deleted. A launcher opened during the
+    install used to delete the files not copied yet, leaving an installation without its new
+    files ("No module named 'game_check'", #38). False when the folder is in use."""
+    try:
+        update_installing_mark().unlink(missing_ok=True)
+    except OSError:
+        return False
+    shutil.rmtree(UPDATE_DIR, ignore_errors=True)
+    return True
+
+
+def copy_release(source, target, files=None):
+    """Copies the release in source over target, leaving the player's USER_FILES at the top
+    alone; `files` limits it to those relative paths. Returns the files not copied."""
+    source, target = Path(source), Path(target)
+    if files is None:
+        files = [path.relative_to(source) for path in sorted(source.rglob('*'))
+                 if path.is_file() and path.relative_to(source).parts[0] not in USER_FILES]
+    failed = []
+    for relative in files:
+        try:
+            (target / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / relative, target / relative)
+        except OSError:
+            failed.append(relative)
+    return failed
+
+
 def install_update(target, wait_pid):
     """--install-update TARGET PID, run by the downloaded version from its temporary folder:
     waits for the old launcher to close, copies this version over TARGET (never the saves,
     settings or mods) and starts it."""
     target = Path(target)
+    try:
+        mark = open(update_installing_mark(), 'w')  # held open until done: remove_update_folder
+    except OSError:
+        mark = None
     kernel = ctypes.windll.kernel32
     handle = kernel.OpenProcess(0x00100000, False, int(wait_pid))  # SYNCHRONIZE
     if handle:
         kernel.WaitForSingleObject(handle, 60000)
         kernel.CloseHandle(handle)
-    ignore = shutil.ignore_patterns(*USER_FILES)
+    pending = None
     for attempt in range(30):
-        try:
-            shutil.copytree(PORT_DIR, target, dirs_exist_ok=True, ignore=ignore)
+        # Files still in use (the old launcher is closing) are tried again; every file of the
+        # release must arrive, new ones included.
+        pending = copy_release(PORT_DIR, target, pending)
+        if not pending:
             break
-        except OSError:  # a file still in use: the old launcher is closing
-            time.sleep(1)
-    else:
+        time.sleep(1)
+    if mark:
+        mark.close()
+    if pending:
         ctypes.windll.user32.MessageBoxW(None, _(
             'Could not install the update. Download it from the releases page.',
             'Не удалось установить обновление. Скачайте его со страницы релизов.'), 'Bloodborne', 0x10)
@@ -2601,7 +2664,7 @@ def main():
     if args[:1] == ['--install-update'] and len(args) == 3:
         sys.exit(install_update(args[1], args[2]))
     if FROZEN and UPDATE_DIR not in PORT_DIR.parents:
-        shutil.rmtree(UPDATE_DIR, ignore_errors=True)  # what a finished update left behind
+        remove_update_folder()  # what a finished update left behind
     # Without a usable game folder there is nothing to play yet: open the launcher instead.
     if '--play' in args and (Path(settings['game_dir'] or '.') / 'eboot.bin').is_file():
         sys.exit(play_without_window(settings))
