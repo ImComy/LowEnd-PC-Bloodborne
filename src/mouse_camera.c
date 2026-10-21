@@ -11,7 +11,9 @@
  * - Four stores of the game's own turn (yaw twice, 0x130 and 0x294) are skipped while the mouse
  *   drives the camera, as the mod removes them, and run again as soon as the right stick turns
  *   it (a gamepad or bound keys) or the mouse has been still for half a second: controller play
- *   is the game's own code.
+ *   is the game's own code. The "No camera auto-rotation while moving" tweak
+ *   (tweak_no_camera_rotation, the same mod's patch) blanks those four stores for good; the
+ *   mouse camera then leaves them blank and only turns the camera.
  * - Locked on, the game turns the camera; a mouse flick is then a right-stick flick, which
  *   switches targets.
  * - Through the monocular, the motion turns its view instead, at half the rate. */
@@ -48,6 +50,9 @@ static const struct {
     {0x143c870, {9, 0x5e4bc59600d8836dull}}, /* vmovss [r13+0x144], xmm5 */
 };
 #define STORE_COUNT ((int)(sizeof(stores) / sizeof(*stores)))
+
+/* What tweak_no_camera_rotation leaves at each store: nine one-byte nops. */
+static const unsigned char blank_store[9] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
 
 static BbSkip *g_skips[STORE_COUNT];
 static int g_skipping, g_active, g_cooldown;
@@ -151,15 +156,22 @@ static BB_GUEST_ABI void on_camera_update(BbRegs *regs) {
 int bb_mouse_camera_install(void) {
     const char *env = getenv("BB_MOUSE_CAMERA");
     if (env && !strcmp(env, "0")) return 0;
-    /* Every site first, so a mismatch leaves the game unchanged. */
+    /* Every site first, so a mismatch leaves the game unchanged. The stores are either the
+     * game's or all four blanked by tweak_no_camera_rotation, which is applied before the hooks
+     * go in: blanked, there is nothing left to skip (the check used to fail there and leave the
+     * mouse camera out, #63 and #108). */
     const unsigned char *update = bb_guest(CAMERA_UPDATE);
-    int ok = bb_code_is(update, update_code);
-    for (int i = 0; ok && i < STORE_COUNT; ++i) ok = bb_code_is(bb_guest(stores[i].at), stores[i].code);
-    if (!ok) {
+    const BbCode blank_code = {sizeof(blank_store), bb_code_hash(blank_store, sizeof(blank_store))};
+    int original = bb_code_is(update, update_code), blank = original;
+    for (int i = 0; i < STORE_COUNT; ++i) {
+        original = original && bb_code_is(bb_guest(stores[i].at), stores[i].code);
+        blank = blank && bb_code_is(bb_guest(stores[i].at), blank_code);
+    }
+    if (!original && !blank) {
         printf("Mouse camera: the camera code is not game 1.09's; not installed\n");
         return 0;
     }
-    for (int i = 0; i < STORE_COUNT; ++i) {
+    for (int i = 0; original && i < STORE_COUNT; ++i) {
         g_skips[i] = bb_hook_skip(stores[i].at, stores[i].code);
         if (!g_skips[i]) {
             printf("Mouse camera: %s\n", bb_hooks_error());
@@ -170,8 +182,9 @@ int bb_mouse_camera_install(void) {
         printf("Mouse camera: %s\n", bb_hooks_error());
         return STORE_COUNT;
     }
-    printf("Mouse camera: installed (click the game window to use it)\n");
-    return STORE_COUNT + 1;
+    printf("Mouse camera: installed%s (click the game window to use it)\n",
+           original ? "" : ", camera auto-rotation off");
+    return original ? STORE_COUNT + 1 : 1;
 }
 
 int bb_mouse_camera_stick_x(void) {

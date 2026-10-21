@@ -98,6 +98,9 @@ struct Values {
     /// Menu pointer (src/menu_pointer.c): the mouse points and clicks in the game's menus.
     /// BB_MOUSE_MENU=0 turns it off.
     std::atomic<bool> mouse_menu{true};
+    /// The cursor stays hidden over the game window, menus included (#88: for mouse-to-pad
+    /// tools); the guide menu, the map and text entry still show it.
+    std::atomic<bool> mouse_hide_cursor{false};
     std::atomic<int> active_render_width{1920}, active_render_height{1080};
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};

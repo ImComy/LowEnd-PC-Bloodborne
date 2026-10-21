@@ -104,6 +104,7 @@ FIELDS = {
         row('mouse_menu', "Mouse pointer in the game's menus (hover, click, right-click back)", 'toggle'),
         row('mouse_sensitivity', 'Mouse sensitivity', 'choice', core.MOUSE_SPEEDS),
         row('mouse_invert_y', 'Invert mouse Y', 'toggle'),
+        row('mouse_hide_cursor', 'Hide the mouse cursor in the game (for mouse-to-controller tools)', 'toggle'),
         row('move_smoothing', 'Keyboard movement smoothing (WASD direction changes)', 'choice',
             core.MOVE_SMOOTHING),
         row('debug_camera', 'Free camera', 'toggle'),
@@ -166,7 +167,7 @@ SETTINGS_SECTIONS = {
     ],
     'Controls': [
         ('Button prompts', []),
-        ('Mouse', ['mouse_camera', 'mouse_menu', 'mouse_sensitivity', 'mouse_invert_y']),
+        ('Mouse', ['mouse_camera', 'mouse_menu', 'mouse_sensitivity', 'mouse_invert_y', 'mouse_hide_cursor']),
         ('Keyboard', ['move_smoothing']),
     ],
     'Game & Saves': [
@@ -206,6 +207,7 @@ SEARCH_TERMS = {
     'vram_budget_mb': 'vram video memory texture cache pressure budget',
     'user_dir': 'save folder save path', 'game_dir': 'eboot install game files',
     'online_npid': 'account id username', 'mouse_camera': 'camera controls', 'mouse_menu': 'cursor pointer click menus',
+    'mouse_hide_cursor': 'cursor pointer hide invisible',
     'ui_language': 'launcher language', 'mods_enabled': 'load mods',
 }
 SEARCH_ACTIONS = [

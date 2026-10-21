@@ -137,15 +137,18 @@ void bb_bindings_load(const char *ini_path) {
 }
 
 void bb_bindings_apply(const bool *keys, int nkeys, uint32_t mouse, BindOutput *out) {
-    bool held[BIND_COUNT];
+    bool held[BIND_COUNT], by_key[BIND_COUNT];
     out->buttons = 0;
+    out->mouse_buttons = 0;
     out->touch_side = -1;
     out->lx = out->ly = out->rx = out->ry = -1;
     out->any = false;
     for (int a = 0; a < BIND_COUNT; ++a) {
         const int k = g_key[a], m = g_mouse[a];
-        held[a] = (keys && k > 0 && k < nkeys && keys[k]) || (m && (mouse >> (m - 1)) & 1);
+        by_key[a] = keys && k > 0 && k < nkeys && keys[k];
+        held[a] = by_key[a] || (m && (mouse >> (m - 1)) & 1);
     }
+    uint32_t key_buttons = 0;
     for (int a = 0; a < BIND_COUNT; ++a) {
         if (!held[a]) continue;
         out->any = true;
@@ -153,6 +156,7 @@ void bb_bindings_apply(const bool *keys, int nkeys, uint32_t mouse, BindOutput *
         /* The modifier turns Attack into the strong attack, as Dark Souls III's Shift does. */
         if (a == BIND_ATTACK && held[BIND_STRONG_MOD]) bit = PAD_R2;
         out->buttons |= bit;
+        if (by_key[a]) key_buttons |= bit;
         switch (a) {
         case BIND_LOOK_U: out->ry = STICK_LOW; break;
         case BIND_LOOK_D: out->ry = STICK_HIGH; break;
@@ -163,6 +167,7 @@ void bb_bindings_apply(const bool *keys, int nkeys, uint32_t mouse, BindOutput *
         default: break;
         }
     }
+    out->mouse_buttons = out->buttons & ~key_buttons;
     /* The movement keys: a full push each way, a diagonal the square's corner; with Walk held
      * a gentle push, a diagonal's two axes shortened so its reach is the same. Opposite keys
      * cancel. */

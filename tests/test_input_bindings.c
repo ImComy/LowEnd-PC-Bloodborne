@@ -31,6 +31,11 @@ int main(void) {
     assert(o.buttons == 0x200);                     /* Shift + left mouse: R2 */
     o = press(NULL, 1u << 1);
     assert(o.buttons == 0x100);                     /* right mouse: L2 (firearm) */
+    assert(o.mouse_buttons == 0x100);               /* ... held by the mouse alone */
+    o = press("X", 1u << 1);
+    assert(o.buttons == 0x100 && !o.mouse_buttons); /* the firearm key holds it too */
+    o = press("E", 1u << 0);
+    assert(o.buttons == 0x4800 && o.mouse_buttons == 0x800); /* only R1 is the mouse's */
     o = press("W", 0);
     assert(o.ly == 1 && o.lx == 128);               /* forward: a full push up */
     press(NULL, 0);                                 /* stopped: the next move starts at once */
