@@ -504,24 +504,32 @@ void PipelineCache::WarmUp() {
             Serialization::Archive ar{std::move(data)};
             Serialization::Reader pldata{ar};
 
-            u32 version{};
-            pldata.Read(version);
-            if (version != Serialization::PipelineKeyVersion) {
-                return;
-            }
+            // bbport: a damaged key or shader record (Serialization::CorruptData) is skipped
+            // like a stale one; the pipeline is compiled again when the game uses it.
+            try {
+                u32 version{};
+                pldata.Read(version);
+                if (version != Serialization::PipelineKeyVersion) {
+                    return;
+                }
 
-            u32 is_compute{};
-            pldata.Read(is_compute);
+                u32 is_compute{};
+                pldata.Read(is_compute);
 
-            bool result{};
-            if (is_compute) {
-                result = LoadComputePipeline(ar);
-            } else {
-                result = LoadGraphicsPipeline(ar);
-            }
+                bool result{};
+                if (is_compute) {
+                    result = LoadComputePipeline(ar);
+                } else {
+                    result = LoadGraphicsPipeline(ar);
+                }
 
-            if (result) {
-                ++num_pipelines;
+                if (result) {
+                    ++num_pipelines;
+                }
+            } catch (const std::exception&) {
+                sel.infos.fill(nullptr);
+                sel.modules.fill(nullptr);
+                sel.fetch_shader.reset();
             }
         });
 
@@ -624,6 +632,11 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     srt.Read(this, sizeof(*this));
 
     if (walker_func_size) {
+        // A size from a damaged record: never look at bytes past its end.
+        if (walker_func_size > ar.Remaining()) {
+            walker_func = nullptr;
+            throw Serialization::CorruptData{};
+        }
         // bbport: a walker the old fault handler patched to read 0: the shader is translated
         // again instead, so its draws get their real resource tables back (issue #47).
         const u8* code = ar.CurrPtr();
