@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Merge loose-file mods through links, preserving the original game and mod files."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import stat
+import struct
 import sys
 import tempfile
 
@@ -342,6 +344,96 @@ def _overlay_at(game, out, replacements):
         raise
 
 
+# The in-game PC menu's layer (enhancements.py) adds its strings to every language's menu text.
+# A layer above it with its own copy of that file (a mod that edits menu text, such as Restored
+# Change Appearance Feature, or the Brazilian Portuguese text layer) hid them, and the PC rows
+# showed message ids instead of names (GitHub issue #48). The strings are added to that copy
+# instead, in a layer on top of the others.
+PC_MENU_LAYER = 'pc-menu'
+PC_MENU_TEXT_LAYER = 'pc-menu-text'
+PC_MENU_TEXT_FILE = 'menu.msgbnd.dcx'
+PC_MENU_MOVIES = {'optionsetting.gfx', 'title.gfx', 'title_dlc.gfx'}
+
+
+def pc_menu_text_identity():
+    """What the merged files depend on besides their sources: the menu's scripts and strings."""
+    here = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for name in ('menu_assets.py', 'fromsoft.py', 'pc_menu_messages.tsv'):
+        try:
+            digest.update((here / name).read_bytes())
+        except OSError:
+            pass
+    return f'pc-menu-text 1 {digest.hexdigest()[:16]}'
+
+
+def keep_pc_menu_text(layers, generated, out):
+    """`layers`, with one more on top when a layer above the PC menu's replaces a language's
+    menu text: that copy with the PC menu's strings added. A mod replacing one of the movies the
+    menu edits is only reported (its sections would have to be rebuilt in the mod's movie)."""
+    names = [name for name, _root in layers]
+    if PC_MENU_LAYER not in names:
+        return layers
+    owners = {}  # game path, case-folded -> (game path, file, layer): the last layer wins
+    for name, root in layers[names.index(PC_MENU_LAYER) + 1:]:
+        for relative, source in mod_files(root):
+            parts = [p.casefold() for p in relative.parts]
+            if len(parts) == 4 and parts[1] == 'msg' and parts[3] == PC_MENU_TEXT_FILE:
+                owners[relative.as_posix().casefold()] = (relative, source, name)
+            elif len(parts) == 3 and parts[1] == 'menu' and parts[2] in PC_MENU_MOVIES and \
+                    name not in generated:
+                print(f'Mods: {name} replaces {relative.as_posix()}, which the in-game PC menu also '
+                      'edits; the mod\'s copy is used and the PC menu may be incomplete',
+                      file=sys.stderr)
+    if not owners:
+        return layers
+    folder = Path(out) / PC_MENU_TEXT_LAYER
+    stamp_file = folder / 'stamp.txt'
+    lines = [pc_menu_text_identity()]
+    for key in sorted(owners):
+        relative, source, _name = owners[key]
+        info = source.stat()
+        lines.append(f'{relative.as_posix()}\t{source}\t{info.st_size}\t{int(info.st_mtime)}')
+    stamp = '\n'.join(lines) + '\n'
+    try:
+        previous = stamp_file.read_text(encoding='utf-8')
+    except OSError:
+        previous = None
+    made = [line.split('\t', 1)[0] for line in (previous or '').splitlines()[1:]]
+    if previous == stamp and made and all((folder / m).is_file() for m in made):
+        return [*layers, (PC_MENU_TEXT_LAYER, folder)]
+    # Only the files this function wrote go, one by one: nothing here is a link into the game.
+    for m in made:
+        old = folder / m
+        if old.is_file() and not is_link(old):
+            old.unlink()
+    if stamp_file.is_file():
+        stamp_file.unlink()
+    import menu_assets
+    rows = menu_assets.read_messages()
+    lines = lines[:1]
+    for key in sorted(owners):
+        relative, source, name = owners[key]
+        try:
+            data = menu_assets.build_menu_messages(source.read_bytes(), rows)
+        except (OSError, menu_assets.FormatError, IndexError, struct.error) as error:
+            # One that already has the menu's ids was made from the PC menu's own file and works.
+            print(f'Mods: {name}\'s {relative.as_posix()} is used as it is ({error}); the PC '
+                  'menu\'s rows may show numbers in that language', file=sys.stderr)
+            continue
+        target = folder / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        info = source.stat()
+        lines.append(f'{relative.as_posix()}\t{source}\t{info.st_size}\t{int(info.st_mtime)}')
+        print(f'Mods: PC menu strings added to {name}\'s {relative.as_posix()}', file=sys.stderr)
+    if len(lines) == 1:
+        return layers
+    # A file left as it is keeps the stamp from matching, so it is tried (and reported) again.
+    stamp_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return [*layers, (PC_MENU_TEXT_LAYER, folder)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game', type=Path)
@@ -366,6 +458,11 @@ def main():
         else:
             for name in selected(args.mods_dir, args.config):
                 layers.append((name, args.mods_dir / name))
+    generated = {folder.name for folder in args.generated}
+    try:
+        layers = keep_pc_menu_text(layers, generated, args.out)
+    except (OSError, ValueError) as error:
+        print(f'Mods: PC menu strings not merged ({error})', file=sys.stderr)
     print(build_overlay(args.game, args.out, layers))
 
 

@@ -369,6 +369,30 @@ struct CompileTimer {
         ++g_bb_compiles;
     }
 };
+
+// bbport: a stage program register that does not point at a program (AmdGpu::StartsWithProgram)
+// skips the draw or dispatch, as an unreadable resource table does; the next one looks again.
+thread_local bool g_bad_program = false;
+
+bool CheckProgram(const auto& pgm, Shader::HwStage stage) {
+    if (AmdGpu::StartsWithProgram(pgm)) {
+        return true;
+    }
+    g_bad_program = true;
+    static std::atomic<u32> reports{0};
+    if (reports.fetch_add(1, std::memory_order_relaxed) < 16) {
+        std::printf("GPU: %s program register points at %#llx, which is not a program; the draw "
+                    "is skipped\n",
+                    magic_enum::enum_name(stage).data(),
+                    static_cast<unsigned long long>(
+                        reinterpret_cast<uintptr_t>(pgm.template Address<const u32*>())));
+    }
+    return false;
+}
+
+bool TakeBadProgram() {
+    return std::exchange(g_bad_program, false);
+}
 } // namespace
 
 bool PipelineCache::PrepareGraphicsPipeline(PipelineSelection& worker_sel) {
@@ -391,7 +415,7 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     for (u32 i = 0; i < prepared.num_stages; ++i) {
         const auto& stage = prepared.stages[i];
         const auto* pgm = regs.ProgramForStage(static_cast<u32>(stage.hw_stage));
-        if (!pgm || !pgm->Address<u32*>()) {
+        if (!pgm || !AmdGpu::StartsWithProgram(*pgm)) {
             return nullptr;
         }
         const auto params = AmdGpu::GetParams(*pgm);
@@ -426,9 +450,12 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     }
     sel.draw_indirect_params = params;
     Shader::TakeSrtWalkFault();
+    TakeBadProgram();
     // bbport: a stage whose resource table walk faulted (a null table pointer while an effect
-    // starts or an area loads) skips this one draw; the next draw walks the tables again.
-    if (!RefreshGraphicsKey(sel) || Shader::TakeSrtWalkFault()) {
+    // starts or an area loads) skips this one draw; the next draw walks the tables again. So
+    // does a stage whose program register does not point at a program (CheckProgram).
+    const bool refreshed = RefreshGraphicsKey(sel);
+    if (TakeBadProgram() || !refreshed || Shader::TakeSrtWalkFault()) {
         return nullptr;
     }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
@@ -467,7 +494,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
     Shader::TakeSrtWalkFault();
-    if (!RefreshComputeKey() || Shader::TakeSrtWalkFault()) {
+    if (!CheckProgram(liverpool->GetCsRegs(), HwStage::Compute) || !RefreshComputeKey() ||
+        Shader::TakeSrtWalkFault()) {
+        TakeBadProgram();
         return nullptr;
     }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
@@ -694,6 +723,21 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
 
         const auto* pgm = regs.ProgramForStage(stage_in_idx);
         if (!pgm || !pgm->Address<u32*>()) {
+            key.stage_hashes[stage_out_idx] = 0;
+            sel.infos[stage_out_idx] = nullptr;
+            return false;
+        }
+        // bbport: a register that does not point at a program skips the draw (CheckProgram); a
+        // draw-preparation worker leaves the draw to the GPU thread, which reports it. A
+        // geometry stage also needs its copy shader, which BuildRuntimeInfo reads.
+        const auto is_program = [&](const AmdGpu::ShaderProgram& program, HwStage stage) {
+            return sel.worker ? AmdGpu::StartsWithProgram(program) : CheckProgram(program, stage);
+        };
+        if (!is_program(*pgm, stage_in) ||
+            (stage_in == HwStage::Geometry && !is_program(regs.vs_program, HwStage::Vertex))) {
+            if (sel.worker) {
+                sel.worker->failed = true;
+            }
             key.stage_hashes[stage_out_idx] = 0;
             sel.infos[stage_out_idx] = nullptr;
             return false;
