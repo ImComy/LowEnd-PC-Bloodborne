@@ -126,12 +126,33 @@ class CoopTests(unittest.TestCase):
         self.assertFalse(coop.is_tailscale('192.168.1.5'))
 
     def test_tailscale_is_found_on_path_outside_program_files(self):
-        exe = r'E:\Installs\Tailscale\tailscale.exe'
+        # which() must be asked for the full 'tailscale.exe', not 'tailscale': the
+        # latter only resolves when PATHEXT happens to carry .exe, so the lookup must
+        # not depend on it. Also check the exact file found is the one run.
+        exe = r'D:\Apps\Tailscale\tailscale.exe'
         ran = mock.Mock(stdout='100.65.141.9\n')
-        with mock.patch.object(coop.shutil, 'which', return_value=exe), \
+        with mock.patch.object(coop.shutil, 'which', return_value=exe) as which, \
                 mock.patch.object(coop.subprocess, 'run', return_value=ran) as run:
             self.assertEqual(coop.tailscale_ip(), '100.65.141.9')
+        which.assert_called_once_with('tailscale.exe')
         self.assertEqual(run.call_args[0][0][0], str(Path(exe)))
+
+    def test_tailscale_found_in_program_files_when_not_on_path(self):
+        # Not on PATH, so which() misses; it must fall back to the install folder
+        # named by ProgramW6432 before ProgramFiles, and only when the file is there.
+        with tempfile.TemporaryDirectory() as folder:
+            exe = Path(folder) / 'Tailscale' / 'tailscale.exe'
+            exe.parent.mkdir()
+            exe.write_bytes(b'')
+            env = {'ProgramW6432': folder, 'ProgramFiles': r'C:\Program Files'}
+            with mock.patch.object(coop.shutil, 'which', return_value=None), \
+                    mock.patch.dict(coop.os.environ, env, clear=False):
+                self.assertEqual(coop.tailscale_exe(), exe)
+            # The file absent in either folder means no exe is reported.
+            exe.unlink()
+            with mock.patch.object(coop.shutil, 'which', return_value=None), \
+                    mock.patch.dict(coop.os.environ, env, clear=False):
+                self.assertIsNone(coop.tailscale_exe())
 
     def test_tailscale_address_from_the_route_when_the_cli_is_missing(self):
         probe = mock.MagicMock()
