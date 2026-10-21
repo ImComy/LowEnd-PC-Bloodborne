@@ -126,9 +126,11 @@ class CoopTests(unittest.TestCase):
         self.assertFalse(coop.is_tailscale('192.168.1.5'))
 
     def test_tailscale_is_found_on_path_outside_program_files(self):
-        # which() must be asked for the full 'tailscale.exe', not 'tailscale': the
-        # latter only resolves when PATHEXT happens to carry .exe, so the lookup must
-        # not depend on it. Also check the exact file found is the one run.
+        # Ask which() for the full 'tailscale.exe', not bare 'tailscale': the bare
+        # name is only ever resolved by appending a PATHEXT entry, so what comes back
+        # is 'tailscale' + whatever extension matched; the full name makes the result
+        # unambiguously the file handed to subprocess.run. Also check that exact file
+        # is the one run.
         exe = r'D:\Apps\Tailscale\tailscale.exe'
         ran = mock.Mock(stdout='100.65.141.9\n')
         with mock.patch.object(coop.shutil, 'which', return_value=exe) as which, \
@@ -138,18 +140,29 @@ class CoopTests(unittest.TestCase):
         self.assertEqual(run.call_args[0][0][0], str(Path(exe)))
 
     def test_tailscale_found_in_program_files_when_not_on_path(self):
-        # Not on PATH, so which() misses; it must fall back to the install folder
-        # named by ProgramW6432 before ProgramFiles, and only when the file is there.
-        with tempfile.TemporaryDirectory() as folder:
-            exe = Path(folder) / 'Tailscale' / 'tailscale.exe'
-            exe.parent.mkdir()
-            exe.write_bytes(b'')
-            env = {'ProgramW6432': folder, 'ProgramFiles': r'C:\Program Files'}
+        # Not on PATH, so which() misses; it must fall back to the install folder,
+        # ProgramW6432 before ProgramFiles, and only when the file is there. Both
+        # env vars point at our own temp dirs so the real C:\Program Files on the
+        # test machine is never consulted. A distinct exe in each proves the order.
+        with tempfile.TemporaryDirectory() as w6432, tempfile.TemporaryDirectory() as pf:
+            exe_w6432 = Path(w6432) / 'Tailscale' / 'tailscale.exe'
+            exe_pf = Path(pf) / 'Tailscale' / 'tailscale.exe'
+            exe_w6432.parent.mkdir()
+            exe_pf.parent.mkdir()
+            exe_w6432.write_bytes(b'')
+            exe_pf.write_bytes(b'')
+            env = {'ProgramW6432': w6432, 'ProgramFiles': pf}
             with mock.patch.object(coop.shutil, 'which', return_value=None), \
                     mock.patch.dict(coop.os.environ, env, clear=False):
-                self.assertEqual(coop.tailscale_exe(), exe)
-            # The file absent in either folder means no exe is reported.
-            exe.unlink()
+                # ProgramW6432 wins over ProgramFiles when both hold the exe.
+                self.assertEqual(coop.tailscale_exe(), exe_w6432)
+            # ProgramW6432 empty, ProgramFiles has it: fall through to ProgramFiles.
+            exe_w6432.unlink()
+            with mock.patch.object(coop.shutil, 'which', return_value=None), \
+                    mock.patch.dict(coop.os.environ, env, clear=False):
+                self.assertEqual(coop.tailscale_exe(), exe_pf)
+            # Neither folder has it: no exe is reported.
+            exe_pf.unlink()
             with mock.patch.object(coop.shutil, 'which', return_value=None), \
                     mock.patch.dict(coop.os.environ, env, clear=False):
                 self.assertIsNone(coop.tailscale_exe())
