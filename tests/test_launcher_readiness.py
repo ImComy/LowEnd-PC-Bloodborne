@@ -52,6 +52,23 @@ class LauncherReadinessTests(unittest.TestCase):
             self.assertEqual(rows[1]['level'], 'error')
             self.assertEqual(rows[2]['level'], 'warning')
 
+    def test_shadps4_savedata_folder_is_explained(self):
+        # shadPS4's ...\home\1000\savedata as the Saves folder: <title>\SPRJ* lies directly in it.
+        TEMP_PARENT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as temporary:
+            root = Path(temporary)
+            game = root / 'CUSA03173'
+            user = root / 'savedata'
+            save = user / 'CUSA03173/SPRJ0005/userdata0000'
+            save.parent.mkdir(parents=True)
+            save.write_bytes(b'saved game')
+            rows = check_readiness(game, user, lambda _: None)
+            self.assertEqual(rows[2]['level'], 'warning')
+            self.assertIn("shadPS4's savedata folder", rows[2]['detail'])
+            # Its parent (home\1000), as the old "user folder" is chosen.
+            rows = check_readiness(game, root, lambda _: None)
+            self.assertIn("shadPS4's savedata folder", rows[2]['detail'])
+
     def test_save_id_comes_from_game_metadata(self):
         TEMP_PARENT.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as temporary:

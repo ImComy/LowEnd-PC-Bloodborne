@@ -1510,13 +1510,13 @@ class LauncherBackend(QObject):
     @Slot()
     def testConnection(self):
         self._set_notice("Testing The Hunter's Dream…")
-        signed_in = self.app.get('thd_online_id', '') if self.thdSignedIn else ''
+        online_id, token = (self.app.get('thd_online_id', ''), self.app.get('thd_token', '')) \
+            if self.thdSignedIn else ('', '')
 
         def work():
             community = core.community_address(self.app['online_community'])
             result = core.server_check_hunters_dream(community)
-            result += '\n' + (f'Signed in as {signed_in}' if signed_in else
-                              'Not signed in: use "Sign in with Discord".')
+            result += '\n' + core.thd_account_check(community, online_id, token)
             self.connectionResult.emit(result)
         threading.Thread(target=work, daemon=True).start()
 

@@ -153,6 +153,32 @@ class ModTests(unittest.TestCase):
                 capture_output=True, text=True, check=True)
             self.assertEqual((Path(result.stdout.strip()) / 'dvdroot_ps4/chr/a.dcx').read_bytes(), expected)
 
+    def test_shadps4_sibling_folder_of_symlinks_is_left_out(self):
+        # BBLauncher's CUSA03173-mods: symlinks into its own Mods-Active folder.
+        legacy = Path(str(self.game) + '-mods')
+        folder = legacy / 'dvdroot_ps4/chr'
+        folder.mkdir(parents=True)
+        target = self.root / 'elsewhere.dcx'
+        target.write_bytes(b'linked')
+        try:
+            (folder / 'a.dcx').symlink_to(target)
+        except OSError:
+            self.skipTest('creating symlinks needs Developer Mode on Windows')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/mods.py'), str(self.game),
+            '--out', str(self.root / 'out'), '--mods-dir', str(self.moddir), '--enabled', '1'],
+            capture_output=True, text=True, check=True)
+        self.assertEqual((Path(result.stdout.strip()) / 'dvdroot_ps4/chr/a.dcx').read_bytes(), b'original')
+        self.assertIn('left out', result.stderr)
+
+    def test_empty_shadps4_sibling_folder_is_left_out(self):
+        # What BBLauncher leaves with every mod deactivated: the folder, without game files.
+        Path(str(self.game) + '-mods').mkdir()
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/mods.py'), str(self.game),
+            '--out', str(self.root / 'out'), '--mods-dir', str(self.moddir), '--enabled', '1'],
+            capture_output=True, text=True, check=True)
+        self.assertEqual((Path(result.stdout.strip()) / 'dvdroot_ps4/chr/a.dcx').read_bytes(), b'original')
+        self.assertIn('left out', result.stderr)
+
     def test_generated_files_lie_under_player_mods_and_apply_with_mods_off(self):
         generated = self.root / 'generated' / 'feature'
         (generated / 'dvdroot_ps4/chr').mkdir(parents=True)

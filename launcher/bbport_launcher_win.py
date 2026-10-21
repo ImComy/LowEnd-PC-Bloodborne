@@ -13,6 +13,7 @@ so a packaged port needs no Python installation. A plain start launches the game
 setup is done; `--launcher` (or Shift/Ctrl held) opens the launcher and `--setup` the wizard.
 """
 import ctypes
+import http.client
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,8 @@ HERO_ART = PORT_DIR / 'launcher' / 'art' / 'hero.png'
 STRIP_ART = PORT_DIR / 'launcher' / 'art' / 'strip.png'
 # Co-op: the community server that answers the game's own server requests.
 COMMUNITY_SERVER = 'https://thehuntersdream.com'
+# Its co-op service (bbhost's), as run.py's COMMUNITY_API_PORT sets the game's BB_THD_SERVER.
+COMMUNITY_API_PORT = 18671
 RELEASES_API = 'https://api.github.com/repos/Jgamrot/bloodborne_pc/releases/latest'
 RELEASES_PAGE = 'https://github.com/Jgamrot/bloodborne_pc/releases/latest'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'bbport-update'
@@ -590,7 +593,7 @@ def server_check_hunters_dream(community):
     """Whether The Hunter's Dream's game server and bbhost service answer (off the UI thread)."""
     lines = []
     for title, url in ((_('Game server {0}'), community + ':20443/bb-eu/ss.info'),
-                       (_('Co-op service {0}'), community + ':18671/')):
+                       (_('Co-op service {0}'), f'{community}:{COMMUNITY_API_PORT}/')):
         name = title.format(url.split('://', 1)[1].split('/')[0])
         try:
             urllib.request.urlopen(url, timeout=6).close()
@@ -600,6 +603,51 @@ def server_check_hunters_dream(community):
         except (OSError, ValueError) as error:
             lines.append(_('{0}: not reachable ({1})').format(name, error))
     return '\n'.join(lines)
+
+
+def thd_client_refused(reason):
+    """Whether a 401's reason is the server refusing this build ("This client is not supported"),
+    which a new sign-in cannot change; gpu/bbnet/thd/thd_session.cpp tells the two apart alike."""
+    return 'client is not supported' in reason.casefold()
+
+
+def thd_account_check(community, online_id, token):
+    """Whether The Hunter's Dream accepts this sign-in from this client: the game's own event
+    poll (read-only, no ack), with the headers gpu/bbnet/thd/thd_session.cpp sends. A saved
+    token alone says nothing: the server can still refuse the account or this build (HTTP 401)."""
+    if not online_id or not token:
+        return _('Not signed in: use "Sign in with Discord".')
+    # The game sends at most 16 characters of it (thd_session.cpp, BB_THD_ONLINE_ID).
+    body = {'OnlineId': online_id[:16], 'Cursor': 0, 'Categories': ['matching2']}
+    request = urllib.request.Request(f'{community}:{COMMUNITY_API_PORT}/np/events/poll',
+                                     data=json.dumps(body).encode(),
+                                     method='POST',
+                                     headers={'Content-Type': 'application/json', 'Accept': 'application/json',
+                                              'User-Agent': CLIENT_VERSION.replace(' ', '/'),
+                                              'X-BBHost-Ruleset': os.environ.get('BB_THD_RULESET') or 'vanilla',
+                                              'X-BB-Token': token})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            reply = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        if error.code != 401:
+            return _('Sign-in as {0}: not checked (HTTP {1})').format(online_id, error.code)
+        try:
+            reason = json.loads(error.read()).get('Message') or ''
+        except (OSError, ValueError, AttributeError, http.client.HTTPException):
+            reason = ''
+        line = _('Sign-in as {0}: refused by the server ({1})').format(online_id, reason or 'HTTP 401')
+        if thd_client_refused(reason):
+            line += '\n' + _('The server refuses this build, not the account: signing in again does not help.')
+        return line
+    except ValueError:
+        # Answered, but not with the poll's JSON: a proxy, a captive portal or another service.
+        return _("Sign-in as {0}: not checked (the reply is not from The Hunter's Dream)").format(online_id)
+    except (OSError, http.client.HTTPException) as error:
+        return _('Sign-in as {0}: not checked ({1})').format(online_id, connection_error_text(error))
+    if not isinstance(reply, dict):
+        return _("Sign-in as {0}: not checked (the reply is not from The Hunter's Dream)").format(online_id)
+    return _('Signed in as {0}: accepted by the server').format(online_id)
 
 
 # Keyboard button prompts: PCBButtons by JinkiJinn (Nexus Mods, Bloodborne mod 460, shipped with

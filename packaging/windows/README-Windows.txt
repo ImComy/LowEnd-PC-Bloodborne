@@ -68,7 +68,13 @@ Switching from another launcher
 - Open this package's Bloodborne.exe. Under "Game", choose the existing folder that
   contains eboot.bin as "Game folder". Set "Saves folder" to the old user folder if you want
   those saves, or copy your backed-up saves into the new user folder while both apps are closed.
+  The old user folder means another bbport launcher's user folder. shadPS4's own savedata
+  folder (...\home\1000\savedata) has a different layout: copy its CUSA00207 folder (or your
+  region's save ID) into user\savedata\1\ instead of choosing it as the Saves folder.
 - Copy only the mods you want into the new mods folder, enable them, and press PLAY.
+- A folder named like your game folder plus "-mods" (for example CUSA03173-mods) is loaded as a
+  mod too. BBLauncher makes one out of symlinks; this port leaves such a folder out and says so
+  in last_run.log. Copy the mod itself into the mods folder to use it here.
 
 Data
 - Saves and shader caches: user\ next to Bloodborne.exe (the launcher can pick another folder).

@@ -405,9 +405,21 @@ def main():
     layers = [(folder.name, folder) for folder in args.generated if content_root(folder)]
     if args.enabled == '1':
         # shadPS4's loose overlay convention, beside the original game.
+        # Another launcher's overlay there would stop every start, though the player never chose
+        # it here: BBLauncher builds it from symlinks into its own Mods-Active folder, or leaves
+        # it empty. Such a folder is left out, with what to do.
         legacy = Path(str(args.game.resolve()) + '-mods')
         if legacy.is_dir():
-            layers.append((legacy.name, legacy))
+            try:
+                for _entry in mod_files(legacy):  # what build_overlay would refuse
+                    pass
+            except ValueError as error:
+                why = ('its files are symlinks (made by another launcher, such as BBLauncher)'
+                       if 'symlink' in str(error) else str(error))
+                print(f'Mods: {legacy} left out: {why}. Copy the mod itself into the Mods folder '
+                      f'to use it here.', file=sys.stderr)
+            else:
+                layers.append((legacy.name, legacy))
         # A directly selected loose overlay is also accepted.
         if child(args.mods_dir, 'dvdroot_ps4').is_dir():
             layers.append((args.mods_dir.name, args.mods_dir))
