@@ -914,6 +914,24 @@ bool Rasterizer::FilterDrawPasses() const {
     return !(mode == Mode::Disable && (depth_copy || stencil_copy));
 }
 
+void Rasterizer::PrepareUiDraw(const GraphicsPipeline* pipeline) {
+    const auto mrt_mask = pipeline->GetGraphicsKey().mrt_mask;
+    if (!upscaler->Enabled() || (mrt_mask & ~1u)) {
+        return;
+    }
+    const auto vs_hash = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+    auto color = (mrt_mask & 1) ? cb_descs[0].first : VideoCore::ImageId{};
+    const auto& regs = Regs();
+    if (!color && regs.color_buffers[0] && upscaler->IsUiShader(vs_hash)) {
+        // Scaleform begins with a stencil-only draw. Its color target is still selected
+        // in the registers, but PrepareRenderState omits it while color writes are off.
+        // Resolve it here so composition starts before the mask reaches either target.
+        VideoCore::TextureCache::ImageDesc desc{regs.color_buffers[0], CbExtent(0)};
+        color = texture_cache.FindImage(desc);
+    }
+    upscaler->OnDraw(vs_hash, color, db_desc.first);
+}
+
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
     RENDERER_TRACE;
     BbStats::draws.fetch_add(1, std::memory_order_relaxed);
@@ -985,12 +1003,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         ResetBindings(false);
         return;
     }
-    if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
-        const auto& viewport = Regs().viewports[0];
-        upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
-                         cb_descs[0].first, db_desc.first,
-                         UiComposition::NativeViewport(viewport.xscale * 2, viewport.yscale * 2));
-    }
+    PrepareUiDraw(pipeline);
     const PreparedDraw* draw_prepared = bind_prepared;
     // bbport: vertex and index buffers are resolved while the helper binds textures (their
     // commands are recorded after BeginRendering, as before).
@@ -1204,12 +1217,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         ResetBindings(false);
         return;
     }
-    if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
-        const auto& viewport = Regs().viewports[0];
-        upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
-                         cb_descs[0].first, db_desc.first,
-                         UiComposition::NativeViewport(viewport.xscale * 2, viewport.yscale * 2));
-    }
+    PrepareUiDraw(pipeline);
     if (!BindResources(pipeline)) {
         return;
     }

@@ -83,6 +83,14 @@ class OutputSelectionTests(unittest.TestCase):
         box.events['<<ComboboxSelected>>'](None)
         self.assertEqual(variable.get(), launcher.OUTPUTS[0][0])
 
+    def test_1920x1200_preset_is_selectable(self):
+        variable, box = self.selection('1920x1080')
+        values = [value for value, _ in launcher.OUTPUTS]
+        self.assertEqual(values.count('1920x1200'), 1)
+        box.current(values.index('1920x1200'))
+        box.events['<<ComboboxSelected>>'](None)
+        self.assertEqual(variable.get(), '1920x1200')
+
     def test_other_selectors_remain_readonly(self):
         variable, box = self.selection('dlss', 'upscaler', launcher.UPSCALERS)
         self.assertEqual(box.options['state'], 'readonly')
