@@ -52,6 +52,10 @@ ships no game code. Everything from the unreleased 1.9.8 is included (listed fur
   into numbers (#48).
 - A shader register that does not point at a shader skips the draw instead of crashing (#72).
 - 4:3 output resolutions for CRT monitors: 1024×768 to 1920×1440 (#34).
+- The game starts when another program's DLL already holds part of the PS4 address range
+  (exit code 21) (#36); it reserves the free parts around it and logs the module.
+- A damaged shader cache entry is skipped and compiled again instead of stopping the game at
+  "loading shaders" (#80, #104).
 
 ### From 1.9.8 (never released on its own)
 
