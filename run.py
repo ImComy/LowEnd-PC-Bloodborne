@@ -97,6 +97,9 @@ START_SCRIPTS = ('game_check.py', 'enhancements.py', 'atlas.py', 'patches.py', '
                  'language_files.py', 'hud_layout.py', 'content_profile.py', 'link_libc.py', 'link_modules.py',
                  'prepare.py', 'shader_code.py', 'quiet_output.py')
 RELEASES = 'https://github.com/Jgamrot/bloodborne_pc/releases/latest'
+# Text languages (PS4 system language ids) the game shows without Unlock Game Region: English
+# (US) and Russian (GitHub issue #58: Russian text without it).
+REGION_LANGUAGES = ('', '1', '8')
 
 
 def missing_port_files(port=None):
@@ -440,9 +443,12 @@ def main():
         if not env.get('BB_FRAME_CAP_GRID') and ini_value(config, 'frame_cap_grid') == '1':
             env['BB_FRAME_CAP_GRID'] = '1'
         extra = env.get('BB_PATCHES', '')
-        # Chinese text (BB_LANGUAGE 10, 11) shows only with the game's region unlocked
-        # (k1m0206, Supermedo PR #91; its server lookups stay on Europe).
-        if env.get('BB_LANGUAGE') in ('10', '11') and 'Unlock Game Region' not in extra:
+        # The game shows only its region's text languages and falls back to English for the
+        # others: Chinese (BB_LANGUAGE 10, 11), and Spanish and Japanese too (GitHub issues #126,
+        # #133; Spanish checked in game). Every language but English and Russian (shown without
+        # it) gets the region unlocked (k1m0206, Supermedo PR #91; its server lookups stay on
+        # Europe).
+        if env.get('BB_LANGUAGE', '1') not in REGION_LANGUAGES and 'Unlock Game Region' not in extra:
             extra = ';'.join(filter(None, (extra, 'Unlock Game Region')))
         # Offline, the title screen goes straight to the main menu (PLAY ONLINE would only fail
         # there); online play and co-op keep the dialog. BB_SKIP_NETWORK_CHOICE=0 shows it offline
