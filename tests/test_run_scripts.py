@@ -44,5 +44,20 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn(run.RELEASES, text)
 
 
+class StartupOutputTests(unittest.TestCase):
+    def test_an_in_game_restart_takes_the_new_output_size(self):
+        # GitHub issue #141: changed to 3440x1440 in game, the restart made the HUD layout for
+        # the previous start's size (BB_OUTPUT_RES, set by run.py itself).
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder) / 'bbport.ini'
+            config.write_text('output_res=3440x1440\n')
+            env = {'BB_OUTPUT_RES': '2560x1440', 'BB_RENDER_RES': '1506x846', 'BB_AUTO_RENDER_RES': '1'}
+            self.assertEqual(run.startup_output_res(env, config), '3440x1440')
+            self.assertEqual(env, {})
+            # A size the player set (not chosen by run.py) still wins.
+            env = {'BB_OUTPUT_RES': '1920x1080'}
+            self.assertEqual(run.startup_output_res(env, config), '1920x1080')
+
+
 if __name__ == '__main__':
     unittest.main()
