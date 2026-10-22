@@ -262,6 +262,7 @@ class LauncherBackend(QObject):
         self._game_started = False
         self._checks_started = False
         self.ini, self.ini_lines = core.load_ini()
+        self._remember_written()
         self.process = None
         self.job = None
         self._log = ''
@@ -614,11 +615,34 @@ class LauncherBackend(QObject):
     def value(self, key):
         return self.ini.get(key, '') if key in core.INI_DEFAULTS else self.app.get(key, '')
 
+    def _remember_written(self):
+        """What settings.json and bbport.ini held when this launcher last read or wrote them."""
+        self._written_app = json.loads(json.dumps(self.app))
+        self._written_ini = dict(self.ini)
+
+    def _sync_from_disk(self):
+        """Takes what the game wrote while the launcher was open: the in-game menu saves to
+        bbport.ini and the in-game Fullscreen switch to settings.json. A value the launcher changed
+        itself since its last write stays; any other the launcher would have written back over the
+        game's (after Supermedo 40a883e, ethan; Awaken's 0.9.30 release notes)."""
+        saved = core.load_json(core.CONFIG_FILE, None)
+        if isinstance(saved, dict) and saved:
+            for key, value in core.app_settings(saved).items():
+                if self.app.get(key) == self._written_app.get(key) and value != self._written_app.get(key):
+                    self.app[key] = value
+        disk, lines = core.load_ini()
+        for key, value in disk.items():
+            if self.ini.get(key) == self._written_ini.get(key) and value != self._written_ini.get(key):
+                self.ini[key] = value
+        self.ini_lines = lines
+
     def _write(self):
+        self._sync_from_disk()
         core.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         core.CONFIG_FILE.write_text(json.dumps(self.app, indent=2, ensure_ascii=False), encoding='utf-8')
         core.save_ini({k: self.ini[k] for k in core.INI_DEFAULTS}, self.ini_lines)
         self.ini, self.ini_lines = core.load_ini()
+        self._remember_written()
         self.changed.emit()
 
     @Slot()
@@ -871,6 +895,11 @@ class LauncherBackend(QObject):
             self.job.close()
             self.job = None
         self.runningChanged.emit()
+        self._sync_from_disk()  # what the in-game menu changed, shown at once
+        self._remember_written()
+        self._settings_revision += 1
+        self.presetApplied.emit()  # the pages rebuild their rows with those values
+        self.changed.emit()
         if self._game_started or code == 0:
             self._set_notice('Ready to hunt.')
         else:
