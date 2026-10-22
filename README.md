@@ -51,7 +51,8 @@ of upcoming features are marked *Pre-release* on the
 - Controller, and keyboard and mouse at the same time, with rebindable keys
   (`key_<action>=` lines in `bbport.ini`).
 - Mouse camera: click the game window and the mouse turns the camera 1:1. Sensitivity and
-  invert Y are in **Settings > Controls > Mouse**.
+  invert Y are in **Settings > Controls > Mouse**. Locked on, a quick sideways flick of the
+  mouse switches targets, as in Dark Souls III.
 - Keyboard movement smoothing: changing direction with WASD swings smoothly instead of
   stopping for a moment (**Settings > Controls > Keyboard**, *Off* to disable).
 - Button prompts: PlayStation, Xbox or keyboard keys (see below), switchable in the launcher
@@ -210,6 +211,7 @@ page take precedence:
 | Hunter's Dream mirror | `pc_mirror_appearance=1` | `BB_PC_MIRROR=1` |
 | Two invaders | `pc_two_invaders=1` | `BB_PC_TWO_INVADERS=1` |
 | Mouse camera | `mouse_camera=0` turns it off | `BB_MOUSE_CAMERA=0` |
+| Mouse flick that switches lock-on targets (mouse counts; higher needs a bigger flick) | `mouse_flick_threshold=300`, `0` turns it off | `BB_MOUSE_DEBUG=1` logs it |
 | Mouse pointer in the game's menus | `mouse_menu=0` turns it off | `BB_MOUSE_MENU=0` |
 | 12-second respawn wait | | `BB_RESPAWN_DELAY_FIX=0` restores it |
 | Strict frame cap (no single frame faster than the cap) | | `BB_STRICT_FRAME_CAP=0` |
