@@ -413,9 +413,12 @@ int32_t FrameGenEvaluate(VkCommandBuffer command, const BbDlssgEvaluate* evaluat
         Identity(options.prevClipToClip);
     }
     Inverse(options.clipToCameraView, options.cameraViewToClip);
-    options.jitterOffset[0] = evaluate->jitter_x;
-    options.jitterOffset[1] = evaluate->jitter_y;
-    options.mvecScale[0] = options.mvecScale[1] = 1.0f;
+    // Clip space, as the header asks (the jitter arrives in render pixels, y down).
+    options.jitterOffset[0] = evaluate->jitter_x * 2.0f / float(state.fg_desc.render_width);
+    options.jitterOffset[1] = -evaluate->jitter_y * 2.0f / float(state.fg_desc.render_height);
+    // The vectors are in render pixels; Frame Generation wants them in [-1, 1] of the screen.
+    options.mvecScale[0] = 1.0f / float(state.fg_desc.render_width);
+    options.mvecScale[1] = 1.0f / float(state.fg_desc.render_height);
     options.cameraUp[1] = 1.0f;
     options.cameraRight[0] = 1.0f;
     options.cameraFwd[2] = 1.0f;
