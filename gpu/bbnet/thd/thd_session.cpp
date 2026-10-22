@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -137,6 +138,17 @@ void MarkRefused(const std::string& reason) {
         if (g_refused) return;
         g_refused = true;
         name = g_name;
+    }
+    // "This client is not supported ...": the server refuses this build (the User-Agent), not
+    // the account, so a new sign-in gets the same answer (thd_client_refused in the launcher).
+    std::string lower = reason;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (lower.find("client is not supported") != std::string::npos) {
+        Log("the server refused this client (%s) for %s (%s): signing in again does not help; "
+            "offline play and seamless co-op still work",
+            Cfg().client.c_str(), name.c_str(), reason.c_str());
+        return;
     }
     Log("the server refused this PC's sign-in as %s (%s): sign in again on the launcher's Online "
         "page; until then nobody can summon or invite this player",

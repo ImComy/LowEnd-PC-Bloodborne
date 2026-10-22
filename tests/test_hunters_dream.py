@@ -95,6 +95,57 @@ class HuntersDreamTests(unittest.TestCase):
         self.assertEqual(result, ('Hunter1', 'tok'))
         self.assertEqual(pages, [('https://thehuntersdream.com/link?code=ABCD-EFGH', 'ABCD-EFGH')])
 
+    def test_connection_test_asks_the_server_about_the_sign_in(self):
+        # Issue #69: a saved token showed "Signed in" while the game got HTTP 401.
+        import io
+        import urllib.error
+        refused = urllib.error.HTTPError('https://thehuntersdream.com:18671/np/events/poll', 401,
+                                         'Unauthorized', {}, io.BytesIO(json.dumps(
+                                             {'Message': 'This client is not supported'}).encode()))
+        with mock.patch.object(launcher.urllib.request, 'urlopen', side_effect=refused) as urlopen:
+            line = launcher.thd_account_check('https://thehuntersdream.com', 'Hunter1', 'tok')
+        request = urlopen.call_args[0][0]
+        self.assertEqual(request.get_header('X-bb-token'), 'tok')
+        self.assertEqual(request.get_header('User-agent'), f'bbport-jgamrot/{launcher.VERSION}')
+        self.assertIn('refused by the server (This client is not supported)', line)
+        self.assertIn('signing in again does not help', line)
+        # Any other refusal is the account's: signing in again is the way out.
+        expired = urllib.error.HTTPError('https://thehuntersdream.com:18671/np/events/poll', 401,
+                                         'Unauthorized', {}, io.BytesIO(json.dumps(
+                                             {'Message': 'Token was issued to another client'}).encode()))
+        with mock.patch.object(launcher.urllib.request, 'urlopen', side_effect=expired):
+            line = launcher.thd_account_check('https://thehuntersdream.com', 'Hunter1', 'tok')
+        self.assertIn('refused by the server', line)
+        self.assertNotIn('does not help', line)
+        # A broken reply is reported, not left to end the check's thread.
+        import http.client
+        with mock.patch.object(launcher.urllib.request, 'urlopen',
+                               side_effect=http.client.IncompleteRead(b'')):
+            self.assertIn('not checked', launcher.thd_account_check('https://thehuntersdream.com', 'Hunter1', 'tok'))
+        # Another refusal that says "not supported" is not about this build.
+        ruleset = urllib.error.HTTPError('https://thehuntersdream.com:18671/np/events/poll', 401,
+                                         'Unauthorized', {}, io.BytesIO(json.dumps(
+                                             {'Message': 'Ruleset hard is not supported'}).encode()))
+        with mock.patch.object(launcher.urllib.request, 'urlopen', side_effect=ruleset):
+            self.assertNotIn('does not help', launcher.thd_account_check('https://thehuntersdream.com',
+                                                                         'Hunter1', 'tok'))
+
+        def answer(body):
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = body
+            return response
+        # Accepted only with the poll's own JSON reply; the game's 16-character online ID is sent.
+        with mock.patch.object(launcher.urllib.request, 'urlopen',
+                               return_value=answer(b'{"HasEvent": 0, "NextCursor": 0}')) as urlopen:
+            self.assertIn('accepted', launcher.thd_account_check('https://thehuntersdream.com',
+                                                                 'A' * 20, 'tok'))
+        self.assertEqual(json.loads(urlopen.call_args[0][0].data)['OnlineId'], 'A' * 16)
+        with mock.patch.object(launcher.urllib.request, 'urlopen',
+                               return_value=answer(b'<html>Sign in to the Wi-Fi</html>')):
+            self.assertIn('not from The Hunter', launcher.thd_account_check('https://thehuntersdream.com',
+                                                                            'Hunter1', 'tok'))
+        self.assertIn('Not signed in', launcher.thd_account_check('https://thehuntersdream.com', '', ''))
+
     def test_https_trusts_the_shipped_roots_and_explains_certificate_errors(self):
         # Issue #13: CERTIFICATE_VERIFY_FAILED on a PC whose Windows store lacks the roots.
         import certifi

@@ -110,8 +110,25 @@ def check_readiness(game_dir, user_dir, game_info):
                 found_save = any(path.is_file() and path.stat().st_size > 0 for path in saves)
             except OSError:
                 found_save = False
+            # shadPS4's own savedata folder (…\home\1000\savedata) holds <title>\SPRJ* directly;
+            # chosen as the Saves folder (or its parent, home\1000), the game misses that save and
+            # starts a new, empty one. Only looked for when no save is where the port reads them.
+            shadps4_save = False
+            if not found_save:
+                try:
+                    shadps4_save = any(path.is_file() and path.stat().st_size > 0
+                                       for pattern in (f'{save_id}/SPRJ*/userdata*',
+                                                       f'savedata/{save_id}/SPRJ*/userdata*')
+                                       for path in user.glob(pattern))
+                except OSError:
+                    pass
             if found_save:
                 result.append(_item('Saves', 'ready', f'Save folder is writable; {save_id} save data found.'))
+            elif shadps4_save:
+                result.append(_item('Saves', 'warning',
+                                    f'This looks like shadPS4\'s savedata folder: its {save_id} save is not '
+                                    f'where this port reads saves, so the game would start a new one. Choose '
+                                    f'another Saves folder and copy {save_id} into its savedata\\1 folder.'))
             else:
                 result.append(_item('Saves', 'warning', f'Save folder is writable; no {save_id} save yet.'))
     return result
