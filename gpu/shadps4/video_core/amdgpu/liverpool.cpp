@@ -336,6 +336,45 @@ void RunWriteData(Vulkan::Rasterizer& rasterizer, const u8* data) {
                 (header->type3.count.Value() - 2) * sizeof(u32));
 }
 
+// bbport: the stand-in occlusion counts in stream order (from Awakenchan 0.9.35, "ZpassDump").
+// The game starts every query with a DMA_DATA that zeroes its block, a WAIT_REG_MEM for the
+// zero, then this counter dump; it reads the query as done only when every counter has bit 63.
+// With the draw pipeline the DMA runs later, on the recording thread, but the dump was written
+// at decode: on a block that already read zero (a new one) the wait passed, the zeroing landed
+// after the counts and the query never finished. The game polls its unfinished queries every
+// frame and makes new ones in their place: FPS fell over a session, and when it could make no
+// more it began a query with no handle (null read at guest+0x2169edc).
+// BB_ZPASS_IN_ORDER=0: written at decode, as before.
+struct ZpassDump {
+    VAddr address;
+    u64 value;
+    u32 num_pairs;
+};
+
+bool ZpassInOrder() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_ZPASS_IN_ORDER");
+        return !env || env[0] != '0';
+    }();
+    return enabled;
+}
+
+void WriteZpassCounters(const ZpassDump& dump) {
+    u64* results = reinterpret_cast<u64*>(dump.address);
+    for (u32 i = 0; i < dump.num_pairs; ++i, results += 2) {
+        *results = dump.value;
+    }
+}
+
+void RunZpassDump(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    ZpassDump dump;
+    std::memcpy(&dump, data, sizeof(dump));
+    // As a WRITE_DATA: after the copies and fences deferred before it.
+    rasterizer.WaitHostCopies();
+    rasterizer.WaitDeferredSignals();
+    WriteZpassCounters(dump);
+}
+
 void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
     const auto& event_eos = *reinterpret_cast<const PM4CmdEventWriteEos*>(data);
     // Copies deferred to the recording thread precede writes the guest sees.
@@ -1142,11 +1181,20 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     if (event->event_type.Value() == EventType::PixelPipeStatDump) {
                         static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
                         static constexpr u64 OcclusionCounterStep = 0x2FFFFFFULL;
-                        u64* results = event->Address<u64*>();
-                        for (s32 i = 0; i < num_counter_pairs; ++i, results += 2) {
-                            *results = pixel_counter | OcclusionCounterValidMask;
-                        }
+                        const ZpassDump dump{event->Address<VAddr>(),
+                                             pixel_counter | OcclusionCounterValidMask,
+                                             num_counter_pairs};
                         pixel_counter += OcclusionCounterStep;
+                        // In order with the DMA that zeroed the block (ZpassDump above).
+                        if (rasterizer && ZpassInOrder()) {
+                            if (rasterizer->RunInOrder(&RunZpassDump, &dump, sizeof(dump),
+                                                       BbToggle::PipelinedMemoryWrites)) {
+                                rasterizer->NotePendingGpuWrite(
+                                    dump.address, u64(dump.num_pairs) * 2 * sizeof(u64));
+                            }
+                        } else {
+                            WriteZpassCounters(dump);
+                        }
                     }
                 }
                 break;
