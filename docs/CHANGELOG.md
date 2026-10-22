@@ -4,6 +4,49 @@ Windows releases of this fork, newest first. Each is on the
 [releases page](https://github.com/Jgamrot/bloodborne_pc/releases) as `bbport-windows.zip`.
 Planned work is in [ROADMAP.md](ROADMAP.md).
 
+## 2.1
+
+Fixes ported from Supermedo's and Awakenchan's ports for open issues, four community pull
+requests, and a guard for the long-session crash in #93/#83.
+
+**From contributors**
+
+- **Mouse flick switches lock-on targets** (LiquidRing, PR #121): a quick sideways flick while
+  locked on switches targets; `mouse_flick_threshold` in bbport.ini (default 300, 0 turns it off).
+- **Sign-in check and clearer start-up messages** (LDCanetti, PR #129): *Test connection* asks
+  The Hunter's Dream whether it accepts the sign-in instead of trusting a saved token; a leftover
+  `CUSA03173-mods` folder from BBLauncher no longer stops every start; a shadPS4 savedata folder
+  chosen as the Saves folder is explained instead of starting a new save.
+- **DLSS frame generation** (xiaodoudou, PR #134): motion vectors and jitter in the units DLSS
+  expects; closing the window no longer freezes in the DLSS DLL's shutdown.
+- **16:10 and menus** (Vaidas12345, PR #136): 1920×1200 in the launcher and the in-game menu, and
+  menu/HUD composition starts at the right draw (icons along the left edge, grey loading bars).
+
+**Fixed issues**
+
+- **FPS falling over a long session** (#74): occlusion counts are written in order with the copy
+  that clears each query, so queries finish (Awakenchan 0.9.35), and lock, semaphore and thread
+  lookups no longer slow down with every loading screen (Awakenchan 0.9.34).
+- **Crash at guest offset 0x2169edc after hours of play** (#93, #83): a query the game could not
+  create is skipped (reported visible, as every query already is) instead of crashing; the fix
+  above should stop the game running out of them in the first place.
+- **"Unreachable code" GPU crash** (#140): an unknown GPU command drops the rest of its command
+  buffer with a warning instead of stopping the game.
+- **Game language** (#126, #133): "Unlock Game Region" is on for every text language except
+  English and Russian, so Spanish, Japanese and the others show their own text (as Supermedo PR
+  #91 did for Chinese), with that PR's fix that keeps online login working.
+- **Windowed mode and output size** (#124, #100): the window opens at the output resolution,
+  fitted to the monitor (Supermedo 5bfa7c2), and the launcher no longer writes its old values over
+  what the in-game menu saved (Supermedo 40a883e).
+- **Two controllers** (#113): Steam Input's virtual pad and the real one are both opened, and
+  input follows the one in use (after Awakenchan 0.9.34).
+- **Incomplete copy of the port** (#118): the start names the missing files and links the
+  releases page instead of a Python traceback.
+- **4 GB cards and full VRAM:** a low-VRAM profile, a staging pool that shrinks after load bursts,
+  and a full VRAM frees unused textures and retries instead of crashing (Supermedo, ethan).
+- Crash reports for crashes inside the C runtime (Supermedo 3fbe057) and for a device lost while
+  presenting (Awakenchan 0.9.37).
+
 ## 2.0
 
 Community pull requests, fixes for many reported issues, 120/144 FPS presets, and a port that

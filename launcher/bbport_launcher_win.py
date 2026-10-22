@@ -44,8 +44,8 @@ PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This fork's build; the release tag includes this version.
-VERSION = '2.0'
-CURRENT_RELEASE_TAG = 'qml-launcher-preview-22'
+VERSION = '2.1'
+CURRENT_RELEASE_TAG = 'qml-launcher-preview-23'
 HERO_ART = PORT_DIR / 'launcher' / 'art' / 'hero.png'
 STRIP_ART = PORT_DIR / 'launcher' / 'art' / 'strip.png'
 # Co-op: the community server that answers the game's own server requests.
