@@ -84,6 +84,39 @@ SDL_DisplayID ChooseDisplay() {
     SDL_free(ids);
     return display;
 }
+
+// The window's size when it is not fullscreen: the output resolution, made smaller (same shape)
+// until it fits the monitor's free area with room for the title bar. A window always opened at
+// 1920 x 1080 covered a 1080p monitor like fullscreen (#124) and did not follow a smaller output
+// such as 1280 x 720 (#100). (After Supermedo 5bfa7c2, nick24051998, where the launcher places
+// the window at the output size on the chosen monitor; here the window opens that way, also for
+// shortcut, Steam and Proton starts.) BB_WINDOW_SIZE=WxH sets it; 0 keeps the size the port asks
+// for (1920 x 1080).
+void WindowedSize(SDL_DisplayID display, s32& width, s32& height) {
+    s32 w = 0, h = 0;
+    const char* wanted = std::getenv("BB_WINDOW_SIZE");
+    if (wanted && !std::strcmp(wanted, "0")) {
+        return;
+    }
+    if (!wanted || std::sscanf(wanted, "%dx%d", &w, &h) != 2 || w < 320 || h < 180) {
+        const int r = std::clamp(BbSettings::Get().output_res.load(), 0, BbSettings::OutputCount - 1);
+        w = BbSettings::OutputWidths[r];
+        h = BbSettings::OutputHeights[r];
+    }
+    SDL_Rect room{};
+    if (SDL_GetDisplayUsableBounds(display, &room) && room.w > 0 && room.h > 0) {
+        float scale = SDL_GetDisplayContentScale(display);
+        scale = scale > 0.0f ? scale : 1.0f;
+        const double room_w = room.w - 16.0 * scale, room_h = room.h - 40.0 * scale;
+        const double fit = std::min({1.0, room_w / w, room_h / h});
+        if (fit < 1.0) {
+            w = std::max(2, int(w * fit) / 2 * 2);
+            h = std::max(2, int(h * fit) / 2 * 2);
+        }
+    }
+    width = w;
+    height = h;
+}
 } // namespace
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
@@ -94,10 +127,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
     const SDL_DisplayID display = ChooseDisplay();
+    s32 window_w = width_, window_h = height_;
+    WindowedSize(display, window_w, window_h);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width_);
-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height_);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, window_w);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, window_h);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
     fullscreen_applied = BbSettings::Get().fullscreen.load(); // BB_FULLSCREEN, from the launcher

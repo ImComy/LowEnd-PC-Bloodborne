@@ -407,6 +407,12 @@ static int64_t do_open(const char *guest,int flags,int mode) {
     ++opens;
     pthread_mutex_unlock(&lock);
     if (audio_trace() && strstr(guest,"sound/")) printf("Audio trace: open(%s) -> fd %d, %lld bytes\n",guest,fd,(long long)s.st_size);
+    /* The text language the game took, as its first menu text (GitHub issues #126, #133). */
+    static int text_logged;
+    if (strstr(guest,"/msg/") && strstr(guest,"menu.msgbnd") && !__atomic_exchange_n(&text_logged,1,__ATOMIC_RELAXED)) {
+        const char *language=getenv("BB_LANGUAGE");
+        printf("Runtime: game text %s (BB_LANGUAGE=%s)\n",guest,language ? language : "unset");
+    }
     const char *mod_trace=getenv("BB_MOD_TRACE"), *mod_root=getenv("BB_MODS_DIR");
     if (mod_trace && mod_trace[0]=='1' && mod_root) {
         char actual[PATH_MAX],root[PATH_MAX];

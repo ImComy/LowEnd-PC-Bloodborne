@@ -126,11 +126,37 @@ int main(void) {
     assert(data.touch_count==1 && data.touches[0].x==480 && data.touches[0].id!=0);
     usleep(200000);
     assert(pad_read_state(1,&data)==0 && !(data.buttons & BTN_TOUCHPAD));
+    /* Two pads (Steam Input, DS4Windows: a quiet physical pad and the virtual one, #113): the
+     * read stays on the pad in use and moves to the other once the first has been idle. */
+    desc.name="bbport second controller";
+    desc.ntouchpads=0;
+    desc.touchpads=NULL;
+    SDL_JoystickID second_id=SDL_AttachVirtualJoystick(&desc);
+    assert(second_id!=0);
+    SDL_Joystick *second=SDL_OpenJoystick(second_id);
+    assert(second);
+    SDL_UpdateJoysticks(); SDL_UpdateGamepads();
+    usleep(1100000); /* the pad list is read again at most once a second */
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,true));
+    SDL_UpdateJoysticks(); SDL_UpdateGamepads();
+    assert(pad_read_state(1,&data)==0 && (data.buttons & BTN_CROSS));
+    assert(pads[0] && pads[1]);
+    assert(SDL_SetJoystickVirtualButton(second,SDL_GAMEPAD_BUTTON_EAST,true));
+    SDL_UpdateJoysticks(); SDL_UpdateGamepads();
+    assert(pad_read_state(1,&data)==0 && (data.buttons & BTN_CROSS) && !(data.buttons & BTN_CIRCLE));
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,false));
+    SDL_UpdateJoysticks(); SDL_UpdateGamepads();
+    assert(pad_read_state(1,&data)==0 && !(data.buttons & (BTN_CROSS|BTN_CIRCLE)));
+    usleep(1100000);
+    assert(pad_read_state(1,&data)==0 && (data.buttons & BTN_CIRCLE) && !(data.buttons & BTN_CROSS));
+    assert(SDL_SetJoystickVirtualButton(second,SDL_GAMEPAD_BUTTON_EAST,false));
+    SDL_CloseJoystick(second);
     SDL_CloseJoystick(joystick);
-    if (gamepad) SDL_CloseGamepad(gamepad);
+    for (int i=0;i<PAD_MAX;++i) if (pads[i]) { SDL_CloseGamepad(pads[i]); pads[i]=NULL; }
     gamepad=NULL;
+    assert(SDL_DetachVirtualJoystick(second_id));
     assert(SDL_DetachVirtualJoystick(id));
     SDL_Quit();
     unlink(path);
-    puts("PASS: pad ABI, touch IDs/timing, left/right clicks, Xbox Back, SDL touch coordinates, overlay capture");
+    puts("PASS: pad ABI, touch IDs/timing, left/right clicks, Xbox Back, SDL touch coordinates, overlay capture, two pads");
 }

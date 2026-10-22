@@ -2149,16 +2149,37 @@ class Launcher:
             self.mod_dirty = True
             self.refresh_lists()
 
+    @staticmethod
+    def ini_text(key, value):
+        return ('1' if value else '0') if key in INI_FLAGS else \
+            f'{float(value):.2f}' if key == 'sharpness' else str(value)
+
+    def sync_ini(self):
+        """Takes what the in-game menu wrote to bbport.ini while the launcher was open, except where
+        the launcher has an edit of its own that is not saved yet (else Play wrote the launcher's
+        older values over the menu's)."""
+        disk, lines = load_ini()
+        for key, var in self.vars.items():
+            if var.store != 'ini' or key not in disk:
+                continue
+            try:
+                shown = self.ini_text(key, var.get())
+            except (self.tk.TclError, ValueError):  # an unfinished number in a spinbox
+                continue
+            if shown == self.ini.get(key) and shown != disk[key]:
+                var.set(disk[key] == '1' if key in INI_FLAGS else disk[key])
+        self.ini, self.ini_lines = disk, lines
+
     def collect(self):
         """Writes settings.json, bbport.ini, mods.json and patches.json."""
+        self.sync_ini()
         for key, var in self.vars.items():
             try:
                 value = var.get()
             except self.tk.TclError:  # an unfinished number in a spinbox
                 value = APP_DEFAULTS.get(key, INI_DEFAULTS.get(key))
             if var.store == 'ini':
-                self.ini[key] = ('1' if value else '0') if key in INI_FLAGS else \
-                    f'{float(value):.2f}' if key == 'sharpness' else str(value)
+                self.ini[key] = self.ini_text(key, value)
             else:
                 self.app[key] = value
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -2268,6 +2289,7 @@ class Launcher:
                     self.process = None
                     if self.job:
                         self.job.close()
+                    self.sync_ini()  # the in-game menu's changes, shown at once
                     self.stop_button.configure(state='disabled')
                     self.refresh_status()
                 else:
