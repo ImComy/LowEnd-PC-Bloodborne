@@ -133,10 +133,22 @@ void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
 }
+/* bbport: records are never removed (a dozen threads come with every area load), so a found
+ * thread moves to the front: the threads the game asks about (priorities, affinity) are not
+ * behind every finished one (from Awakenchan 0.9.34 beta 9.9). BB_THREAD_FRONT=0: the list
+ * keeps its order, as before. */
 static GuestThread *find_thread(void *handle) {
+    static int front=-1;
+    if (front<0) { const char *e=getenv("BB_THREAD_FRONT"); front=!(e && e[0]=='0'); }
     GuestThread *found=NULL;
     pthread_mutex_lock(&lock);
-    for (GuestThread *t=threads;t;t=t->next) if (t==handle) { found=t; break; }
+    GuestThread **link=&threads;
+    for (GuestThread *t=threads;t;link=&t->next,t=t->next) {
+        if (t!=handle) continue;
+        found=t;
+        if (front && link!=&threads) { *link=t->next; t->next=threads; threads=t; }
+        break;
+    }
     pthread_mutex_unlock(&lock);
     return found;
 }
