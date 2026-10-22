@@ -452,8 +452,13 @@ struct SendRequestPlan {
     int ctx_id = 0;
 };
 
-// Extract the path-and-query portion from a full URL
+// Extract the path-and-query portion from a full URL or an origin-form target.
 static std::string ExtractPathFromUrl(const std::string& url) {
+    // bbport: Bloodborne also supplies paths such as /bb-eu/ss.info directly.
+    if (!url.empty() && url.front() == '/') {
+        return url;
+    }
+
     auto scheme_end = url.find("://");
     if (scheme_end == std::string::npos) {
         return "/";

@@ -31,7 +31,21 @@ index a78e1eb..db1a8e8 100644
      if (it == state.entries.end()) {
          it = state.entries.find("*");
      }
-@@ -1509,7 +1524,10 @@ int PS4_SYSV_ABI sceHttpCreateRequestWithURL(int connId, s32 method, const char* url,
+@@ -440,7 +455,12 @@
+-// Extract the path-and-query portion from a full URL
++// Extract the path-and-query portion from a full URL or an origin-form target.
+ static std::string ExtractPathFromUrl(const std::string& url) {
++    // bbport: Bloodborne also supplies paths such as /bb-eu/ss.info directly.
++    if (!url.empty() && url.front() == '/') {
++        return url;
++    }
++
+     auto scheme_end = url.find("://");
+     if (scheme_end == std::string::npos) {
+         return "/";
+     }
+     auto authority_start = scheme_end + 3;
+@@ -1509,7 +1529,10 @@ int PS4_SYSV_ABI sceHttpCreateRequestWithURL(int connId, s32 method, const char* url,
      auto req = std::make_shared<HttpRequest>();
      req->conn_id = connId;
      req->method = method;
