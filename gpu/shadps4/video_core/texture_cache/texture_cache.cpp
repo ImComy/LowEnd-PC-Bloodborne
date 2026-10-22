@@ -1221,7 +1221,15 @@ void TextureCache::GarbageCollectImages() {
         // budget, one unused for a minute goes all the same, unwritten (render targets of an
         // area left behind): it is the GPU's only copy, but out of VRAM the game slows to
         // system memory or stops instead.
-        const bool drop = tiled && download && aggresive &&
+        // bbport (Supermedo/bloodborne_pc abb3a66): not by default any more (BB_GC_DROP_OLD=1):
+        // dropped, a render target the game still read lost its contents (black screen with
+        // sound on entering the Hunter's Dream, 6 GB cards). Kept, an image past the VRAM budget
+        // goes to system memory (UniqueImage).
+        static const bool drop_old = [] {
+            const char* env = std::getenv("BB_GC_DROP_OLD");
+            return env && env[0] == '1';
+        }();
+        const bool drop = drop_old && tiled && download && aggresive &&
                           total_used_memory >= vram_critical &&
                           image.lru_touched_tick < minute_tick;
         if (tiled && download && !drop) {
