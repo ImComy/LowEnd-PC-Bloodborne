@@ -89,6 +89,28 @@ def fail(message):
     sys.exit(1)
 
 
+# The scripts a start runs or imports. A copy of the port with some left out (seen in repacks
+# from other sites, GitHub issue #118) stopped with "No module named 'game_check'"; it now says
+# what is missing and where the whole package is. (After Awaken's port 0.9.30: "a game folder
+# missing its core files now gets a clear message instead of crashing".)
+START_SCRIPTS = ('game_check.py', 'enhancements.py', 'atlas.py', 'patches.py', 'aspect_ratio.py', 'mods.py',
+                 'language_files.py', 'hud_layout.py', 'content_profile.py', 'link_libc.py', 'link_modules.py',
+                 'prepare.py', 'shader_code.py', 'quiet_output.py')
+RELEASES = 'https://github.com/Jgamrot/bloodborne_pc/releases/latest'
+
+
+def missing_port_files(port=None):
+    port = port or PORT
+    return [f'scripts\\{name}' for name in START_SCRIPTS if not (port / 'scripts' / name).is_file()]
+
+
+def explain_missing_port_files(missing):
+    more = f' and {len(missing) - 1} more' if len(missing) > 1 else ''
+    return (f'This copy of the port is incomplete: {missing[0]}{more} missing from {PORT}. '
+            f'Download the port again from {RELEASES} and unpack the whole zip; copies from '
+            f'other sites often leave files out.')
+
+
 def wait_for(pid):
     kernel32 = ctypes.windll.kernel32
     SYNCHRONIZE = 0x00100000
@@ -214,6 +236,8 @@ def main():
         args = args[2:]
     # As run.sh: relative paths (BB_GAME_DIR, BB_DATA_DIR, fsr4_shaders/) are from the port.
     os.chdir(PORT)
+    if missing := missing_port_files():
+        fail(explain_missing_port_files(missing))
     env = os.environ
     data = Path(env.get('BB_DATA_DIR', PORT))
     out = data / 'out'

@@ -33,6 +33,16 @@ class RunScriptTests(unittest.TestCase):
         self.assertEqual(stop.exception.code, 3)
         self.assertIsNone(run.run_script('fails.py', capture=True, optional=True))
 
+    def test_an_incomplete_port_says_what_is_missing(self):
+        # Issue #118: a repack without scripts/game_check.py stopped with a traceback.
+        self.assertEqual(run.missing_port_files(ROOT), [])
+        missing = run.missing_port_files()
+        self.assertIn('scripts\\game_check.py', missing)
+        text = run.explain_missing_port_files(missing)
+        self.assertIn('scripts\\game_check.py', text)
+        self.assertIn(f'{len(missing) - 1} more', text)
+        self.assertIn(run.RELEASES, text)
+
 
 if __name__ == '__main__':
     unittest.main()
