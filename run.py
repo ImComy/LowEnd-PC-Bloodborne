@@ -180,6 +180,57 @@ def shader_prebuild(game, out, env):
         env['BB_SHADER_CATALOG'] = str(catalog)
 
 
+# Low-VRAM profile (from a player's 4 GB mod; ethan, Supermedo 44a6433; measured on an RTX 3050 Ti
+# Laptop, i5-11300H, Central Yharnam, 1080p output with an upscaler): the texture cache's own marks
+# had it evict and upload again ~30 textures a second with 2.7 GB in use, and the live path's
+# native-size game targets cost ~700 MiB more than the startup patch (2.8 GB at 640x360 against
+# 2.1 GB at 960x540). Discrete GPUs up to LOW_VRAM_MB; BB_LOW_VRAM=1 forces the profile, 0 turns
+# it off.
+LOW_VRAM_MB = 4608
+# Left to the desktop, browsers and the driver.
+VRAM_RESERVE_MB = 600
+
+
+def low_vram_mb(env, caps):
+    """The card's memory in MiB when the low-VRAM profile applies, else 0. caps is
+    bb-gpu-capabilities, which picks the GPU the game uses (BB_GPU_ID included)."""
+    setting = env.get('BB_LOW_VRAM', '')
+    if setting == '0':
+        return 0
+    vram, discrete = 0, False
+    try:
+        result = subprocess.run([str(caps), '--vram'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=20, creationflags=no_console())
+        size, kind = result.stdout.split()
+        vram, discrete = int(size), kind == '1'
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    if setting == '1':
+        return vram or 4096
+    # Integrated GPUs follow the driver's budget already (texture_cache.cpp).
+    return vram if discrete and 0 < vram <= LOW_VRAM_MB else 0
+
+
+def physical_cores():
+    """CPU cores, not threads (GetLogicalProcessorInformation); os.cpu_count() when unknown."""
+    try:
+        from ctypes import wintypes
+        size = wintypes.DWORD(0)
+        ctypes.windll.kernel32.GetLogicalProcessorInformation(None, ctypes.byref(size))
+        buffer = ctypes.create_string_buffer(size.value)
+        if not ctypes.windll.kernel32.GetLogicalProcessorInformation(buffer, ctypes.byref(size)):
+            raise OSError
+        # SYSTEM_LOGICAL_PROCESSOR_INFORMATION: ULONG_PTR mask, then the relationship (0 = a core).
+        entry = ctypes.sizeof(ctypes.c_void_p) * 2 + 16
+        cores = sum(1 for offset in range(0, size.value - entry + 1, entry)
+                    if int.from_bytes(buffer.raw[offset + ctypes.sizeof(ctypes.c_void_p):][:4], 'little') == 0)
+        if cores:
+            return cores
+    except (AttributeError, OSError):
+        pass
+    return os.cpu_count() or 8
+
+
 def start_companions(data, env, game_pid):
     """Companions (tools/bloodborne_rpc: Discord Rich Presence): programs in <data>/companions/<name>/
     that run beside the game, each started only when companions.json lists its folder name under
@@ -408,6 +459,26 @@ def main():
             env.setdefault('BB_DMEM_MB', '9152')
             print(f'Output {scaled_output}: scene {scaled_render}, direct memory {env["BB_DMEM_MB"]} MiB '
                   '(live_resolution=1: live changes)')
+        vram = low_vram_mb(env, probe.parent / 'bb-gpu-capabilities.exe')
+        if vram:
+            env.setdefault('BB_GC_BUDGET_MB', str(max(2048, vram - VRAM_RESERVE_MB)))
+            notes = [f'texture budget {env["BB_GC_BUDGET_MB"]} MiB']
+            # At 1080p output the live path keeps the game's targets native; here they shrink too.
+            wants_live = (env.get('BB_LIVE_RES') or ini_value(config, 'live_resolution')) == '1'
+            if (patched and not scaled_output and not env.get('BB_RENDER_RES') and not wants_live
+                    and ini_value(config, 'upscaler') != 'taa'):
+                size = run_script('patches.py', '--print-preset-size', '--settings', config, capture=True).strip()
+                if size:
+                    env.update(BB_RENDER_RES=size, BB_AUTO_RENDER_RES='1')
+                    notes.append(f'scene {size} patched at start (live_resolution=1: live changes)')
+                    # On this path most prepared draws go unused (145494 of 182272), and on four
+                    # cores the workers take time from the game: 53.0 FPS with 4 workers, 55.1
+                    # with 2, 56.8 without (minimum 45.3, 48.4, 53.3; i5-11300H, 4 cores, 8
+                    # threads). On 8 cores the workers win: 197 FPS without them, 234 with 4.
+                    if physical_cores() <= 4 and 'BB_PREP_WORKERS' not in env:
+                        env['BB_PREP_WORKERS'] = '0'
+                        notes.append('no draw-preparation workers')
+            print(f'Low-VRAM profile ({vram} MiB card): {", ".join(notes)}; BB_LOW_VRAM=0 turns it off')
         # The game's graphics heaps at PC sizes need the larger pool (patches.py HEAP_PATCH;
         # pc_heaps=0 / BB_PC_HEAPS=0: the PS4's heaps, the larger pool only above 1080p).
         if patched and (env.get('BB_PC_HEAPS') or ini_value(config, 'pc_heaps') or '1') != '0':
