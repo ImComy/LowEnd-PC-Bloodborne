@@ -201,6 +201,14 @@ public:
                                          AmdGpu::BorderColorBuffer border_color_base,
                                          bool is_depth, float extra_lod_bias = 0.0f);
 
+    /// bbport: out of GPU memory for an image of its own (scene proxies): unused textures go at
+    /// once, up to `bytes` (ReclaimMemoryFor). Nothing when the cache's lock is taken (the
+    /// caller may be inside it): the image then fails as before.
+    u64 ReclaimMemory(u64 bytes) {
+        std::unique_lock lock{mutex, std::try_to_lock};
+        return lock.owns_lock() ? ReclaimMemoryFor(0, 0, bytes) : 0;
+    }
+
     /// Retrieves the image with the specified id.
     Image* TryGetImage(ImageId id, u64 uid) {
         if (!slot_images.is_allocated(id)) return nullptr;
@@ -382,7 +390,18 @@ private:
     static u64 MaybeDirtyHash(const Image& image);
 
     /// Removes the image and any views/surface metas that reference it.
-    void DeleteImage(ImageId image_id);
+    /// bbport: now: at once, for an image the GPU is done with (ReclaimMemoryFor).
+    void DeleteImage(ImageId image_id, bool now = false);
+    /// Destroys the image and its views (DeleteImage, once the GPU is done with them).
+    void EraseImage(ImageId image_id);
+
+    /// bbport: a new image in slot_images; out of GPU memory for it, frees unused images and
+    /// tries again (ReclaimMemoryFor) rather than ending the game.
+    ImageId InsertImage(const ImageInfo& info);
+
+    /// bbport: destroys at once up to `bytes` of images unused for a few seconds that can be
+    /// recreated from guest memory, none overlapping [addr, addr + size). Returns bytes freed.
+    u64 ReclaimMemoryFor(VAddr addr, size_t size, u64 bytes);
 
     /// Touch the image in the LRU cache.
     void TouchImage(const Image& image);
