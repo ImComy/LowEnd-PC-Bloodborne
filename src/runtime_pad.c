@@ -228,20 +228,67 @@ static void finish_touch(PadData *d) {
     active[0]=seen[0]; active[1]=seen[1];
 }
 
-/* Opens the first gamepad SDL knows about; called under lock. */
+/* Every gamepad SDL knows about is kept open and the game reads one of them. With Steam Input
+ * (Big Picture, Bazzite, Steam Deck) or DS4Windows a pad shows up twice: the physical one, which
+ * the tool keeps quiet, and the virtual pad it drives. SDL's order of the two changes from start
+ * to start, and reading only the first pad sometimes read the quiet one (GitHub issue #113).
+ * The read stays on a pad while it is in use; once it has been idle for a second and another pad
+ * has a button or a stick pushed, it moves there. Two pads sending the same input are both busy
+ * and never trade places (Awaken's port, 0.9.34-beta.8: "controller input flipping between two
+ * devices (DS4Windows, Steam Input)"). */
+#define PAD_MAX 4
+#define PAD_IDLE_US 1000000u
+static SDL_Gamepad *pads[PAD_MAX];
+static uint64_t pad_busy_at[PAD_MAX], pads_listed_at;
+static int pad_busy(SDL_Gamepad *g) {
+    for (int b=0;b<SDL_GAMEPAD_BUTTON_COUNT;++b) if (SDL_GetGamepadButton(g,(SDL_GamepadButton)b)) return 1;
+    for (int a=0;a<SDL_GAMEPAD_AXIS_COUNT;++a) {
+        const int v=SDL_GetGamepadAxis(g,(SDL_GamepadAxis)a);
+        if (v>16000 || v<-16000) return 1;
+    }
+    return 0;
+}
+/* The gamepad the game reads (see above); called under lock. */
 static SDL_Gamepad *current_gamepad(void) {
     if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
     if (sdl_ready<0) return NULL;
-    if (gamepad && !SDL_GamepadConnected(gamepad)) { SDL_CloseGamepad(gamepad); gamepad=NULL; }
-    if (!gamepad) {
+    const uint64_t now=now_us();
+    for (int i=0;i<PAD_MAX;++i) if (pads[i] && !SDL_GamepadConnected(pads[i])) {
+        if (pads[i]==gamepad) gamepad=NULL;
+        SDL_CloseGamepad(pads[i]); pads[i]=NULL;
+    }
+    if (!gamepad || now-pads_listed_at>PAD_IDLE_US) {
+        pads_listed_at=now;
         int count=0;
         SDL_JoystickID *ids=SDL_GetGamepads(&count);
-        if (ids && count>0) {
-            gamepad=SDL_OpenGamepad(ids[0]);
-            cal_reset(); /* a new pad has its own neutral */
-            if (gamepad) { ++connected_count; printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
+        for (int k=0;ids && k<count;++k) {
+            int known=0, free_slot=-1;
+            for (int i=0;i<PAD_MAX;++i) {
+                if (pads[i] && SDL_GetGamepadID(pads[i])==ids[k]) known=1;
+                if (!pads[i] && free_slot<0) free_slot=i;
+            }
+            if (known || free_slot<0) continue;
+            pads[free_slot]=SDL_OpenGamepad(ids[k]);
+            pad_busy_at[free_slot]=0;
+            if (pads[free_slot]) printf("Runtime: gamepad found: %s\n",SDL_GetGamepadName(pads[free_slot]));
         }
         SDL_free(ids);
+    }
+    int current=-1, pick=-1;
+    for (int i=0;i<PAD_MAX;++i) if (pads[i]) {
+        if (pad_busy(pads[i])) pad_busy_at[i]=now;
+        if (pads[i]==gamepad) current=i;
+    }
+    pick=current;
+    if (current<0 || now-pad_busy_at[current]>PAD_IDLE_US) {
+        for (int i=0;i<PAD_MAX;++i) if (pads[i] && i!=current && pad_busy_at[i]==now) { pick=i; break; }
+        for (int i=0;i<PAD_MAX && pick<0;++i) if (pads[i]) pick=i;
+    }
+    if (pick>=0 && pads[pick]!=gamepad) {
+        gamepad=pads[pick];
+        cal_reset(); /* a new pad has its own neutral */
+        ++connected_count;
+        printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad));
     }
     return gamepad;
 }
