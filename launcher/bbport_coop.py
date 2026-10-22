@@ -143,7 +143,9 @@ def download(kind, progress=None):
 
 def tailscale_exe():
     """tailscale.exe: on PATH (the installer adds it, wherever it was installed), else the default folder."""
-    found = shutil.which('tailscale')
+    # Full name, not bare 'tailscale': what which() returns is then unambiguously the
+    # file we hand to subprocess.run, not 'tailscale' + whichever PATHEXT entry matched.
+    found = shutil.which('tailscale.exe')
     if found:
         return Path(found)
     for variable in ('ProgramW6432', 'ProgramFiles'):
