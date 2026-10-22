@@ -280,14 +280,8 @@ void Save() {
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
-    std::fprintf(file, "mouse_camera=%d
-mouse_sensitivity=%d
-mouse_invert_y=%d
-mouse_menu=%d
-"
-                       "mouse_hide_cursor=%d
-mouse_flick_threshold=%d
-",
+    std::fprintf(file, "mouse_camera=%d\nmouse_sensitivity=%d\nmouse_invert_y=%d\nmouse_menu=%d\n"
+                       "mouse_hide_cursor=%d\nmouse_flick_threshold=%d\n",
                  int(v.mouse_camera.load()), v.mouse_sensitivity.load(), int(v.mouse_invert_y.load()),
                  int(v.mouse_menu.load()), int(v.mouse_hide_cursor.load()), v.mouse_flick_threshold.load());
     // Read by patches.py at start.
