@@ -169,6 +169,17 @@ def ini_value(path, key):
     return None
 
 
+def startup_output_res(env, config):
+    """The output size of this start: BB_OUTPUT_RES, else bbport.ini's. Sizes this script chose
+    for the previous start (BB_AUTO_RENDER_RES) are dropped first: after an in-game restart that
+    changed the output, the HUD layout was made for the old one's aspect ratio (a 3440x1440 game
+    with a 16:9 HUD layout, GitHub issue #141), and the scene size recomputed below."""
+    if env.get('BB_AUTO_RENDER_RES') == '1':
+        for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
+            env.pop(key, None)
+    return env.get('BB_OUTPUT_RES') or ini_value(config, 'output_res') or ''
+
+
 def find_executable(name):
     """bin/ (packaged), else out/ (built with build.sh)."""
     for candidate in (PORT / 'bin' / name, PORT / 'out' / name):
@@ -355,7 +366,7 @@ def main():
     from patches import OUTPUT_SIZE, eboot_is_109, game_app_version, hud_canvas, output_size
     hud_layer = Path(out) / 'hud_layout'
     shutil.rmtree(hud_layer, ignore_errors=True)
-    output_res = env.get('BB_OUTPUT_RES') or ini_value(config, 'output_res') or ''
+    output_res = startup_output_res(env, config)
     canvas = hud_canvas(output_size({'output_res': output_res}))
     # Only for the clean 1.09 eboot.bin: patches.py leaves a modified one unpatched (16:9), and
     # widened menus on a 16:9 game came out stretched (Supermedo PR #90, emurphy04).
@@ -433,10 +444,6 @@ def main():
             patched = False
             print('Game files: eboot.bin is not the 01.09 build the community patches were made for; '
                   '30 FPS, no effect patches')
-        # Sizes chosen below for the previous launch are recomputed after an in-game restart.
-        if env.get('BB_AUTO_RENDER_RES') == '1':
-            for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
-                env.pop(key, None)
         fps = env.get('BB_FPS', 'uncap') if patched else '30'
         scaled_render = scaled_output = None
         if not env.get('BB_RENDER_RES'):
