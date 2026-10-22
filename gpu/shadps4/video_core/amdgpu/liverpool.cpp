@@ -1380,8 +1380,19 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             default:
-                UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                                static_cast<u32>(opcode), count);
+                // bbport: a garbage dword whose type bits happen to read 3 ("Unknown PM4 type 3
+                // opcode 0x6 with count 9297" after an hour of play, issue #140) is dropped with
+                // the rest of the buffer, as the type-0 headers above.
+                if (static int reported = 0; reported < 16) {
+                    ++reported;
+                    LOG_WARNING(Render,
+                                "Unknown PM4 type 3 opcode {:#x} with count {} at +{:#x}: rest "
+                                "of the buffer dropped",
+                                static_cast<u32>(opcode), count,
+                                reinterpret_cast<uintptr_t>(dcb.data()) - base_addr);
+                }
+                dcb = {};
+                continue;
             }
             dcb = NextPacket(dcb, header->type3.NumWords() + 1);
             break;
