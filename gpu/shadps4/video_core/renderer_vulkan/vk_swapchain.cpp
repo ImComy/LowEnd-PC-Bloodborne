@@ -118,6 +118,9 @@ bool Swapchain::AcquireNextImage() {
     case vk::Result::eErrorUnknown:
         needs_recreation = true;
         break;
+    case vk::Result::eErrorDeviceLost:
+        // bbport: the driver's fault report, as at submit (Awakenchan 0.9.37 beta 1).
+        instance.DeviceLost("acquiring a swapchain image");
     default:
         LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned unknown result {}",
                      vk::to_string(result));
@@ -141,6 +144,11 @@ bool Swapchain::Present() {
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         needs_recreation = true;
     } else {
+        if (result == vk::Result::eErrorDeviceLost) {
+            // bbport: the driver's fault report instead of just "ErrorDeviceLost" (Awakenchan
+            // 0.9.37 beta 1).
+            instance.DeviceLost("present");
+        }
         ASSERT_MSG(result == vk::Result::eSuccess, "Swapchain presentation failed: {}",
                    vk::to_string(result));
     }
