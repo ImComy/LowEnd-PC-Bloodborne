@@ -107,7 +107,7 @@ static void write_read(const char* label, VkBuffer writer, VkDeviceSize fill_off
 
 int main(void) {
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                                   .apiVersion = VK_API_VERSION_1_3};
+                                   .apiVersion = VK_API_VERSION_1_2};
     const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                       .pApplicationInfo = &app};
     VkInstance instance;

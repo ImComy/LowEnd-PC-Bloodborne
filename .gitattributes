@@ -1,3 +1,2 @@
-# git apply needs patches byte for byte; a CRLF checkout (core.autocrlf) breaks them.
-*.patch text eol=lf
-shader_catalog/** binary
+# Auto detect text files and perform LF normalization
+* text=auto

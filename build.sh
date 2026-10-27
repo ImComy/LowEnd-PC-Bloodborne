@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/c/msys64/clang64/bin:/c/msys64/usr/bin:$PATH"
+[[ -f ./msys2-env.sh ]] && source ./msys2-env.sh
 cd -- "$(dirname -- "$0")"
 mkdir -p out
 # Windows: MSYS2 CLANG64 (packages in packaging/windows/README.md). The GPU library is static

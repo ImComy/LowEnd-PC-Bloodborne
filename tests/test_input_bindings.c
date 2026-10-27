@@ -45,18 +45,6 @@ int main(void) {
     assert(o.lx > 128 && o.lx < 175 && o.ly < 128 && o.ly > 81);  /* a walk, diagonally */
     o = press("G", 0);
     assert(o.buttons == 0x100000 && o.touch_side == 0);  /* gestures: the touchpad's left */
-    /* Arrows sent without the extended-key flag (AutoHotkey, #105) arrive as the numpad's. */
-    o = press("Keypad 8", 0);
-    assert(o.buttons == 0x10);                      /* D-pad Up */
-    o = press("Keypad 4", 0);
-    assert(o.buttons == 0x80);                      /* switch left weapon: d-pad left */
-    assert(bb_bindings_parse("dpad_up", "Keypad 8"));
-    o = press("Up", 0);
-    assert(o.buttons == 0x10);                      /* and the other way round */
-    assert(bb_bindings_parse("lock_on", "Keypad 4"));
-    o = press("Keypad 4", 0);
-    assert(o.buttons == 0x4);                       /* a numpad key with its own action keeps it */
-    assert(bb_bindings_parse("dpad_up", "Up") && bb_bindings_parse("lock_on", "Q"));
 
     /* Movement smoothing (issue #4): W, then W+A swings the stick over a few frames. */
     press(NULL, 0);

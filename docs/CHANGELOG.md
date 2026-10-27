@@ -4,25 +4,6 @@ Windows releases of this fork, newest first. Each is on the
 [releases page](https://github.com/Jgamrot/bloodborne_pc/releases) as `bbport-windows.zip`.
 Planned work is in [ROADMAP.md](ROADMAP.md).
 
-## 2.2
-
-DLSS frame generation in the download, the Hunter's Atlas art back in the package, and fixes for
-remappers, Proton and ultrawide monitors.
-
-- **DLSS frame generation ships** (NVIDIA RTX 40/50): the DLSS bridge is now built from source with
-  NVIDIA's frame-generation runtime, so *Frame generation → DLSS* works, with PR #134's motion
-  vector and jitter fix. Packaging refuses an outdated bridge (xiaodoudou, PR #142).
-- **Hunter's Atlas on a fresh install** (#143): the map art is committed and packaged again
-  (xiaodoudou, PR #144); the 2.0 and 2.1 zips were missing it.
-- **AutoHotkey and other remappers** (#105): arrow and navigation key bindings also accept the
-  numpad key Windows reports for an injected arrow (Up as Numpad 8), unless that key has its own binding.
-- **Proton / Wine** (#42): the mods overlay checks that its folder links really show the game's
-  files and falls back to hard-linked folders, or starts without mods and says why, instead of
-  stopping at `sce_module\libc.prx`.
-- **Ultrawide and high refresh rates** (#141): with the frame rate unlocked, the cap follows the
-  monitor the game opens on, not the primary one; after an in-game resolution change and restart,
-  the HUD is built for the new aspect ratio.
-
 ## 2.1
 
 Fixes ported from Supermedo's and Awakenchan's ports for open issues, four community pull

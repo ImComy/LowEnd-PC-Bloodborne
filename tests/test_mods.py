@@ -136,45 +136,6 @@ class ModTests(unittest.TestCase):
         self.assertEqual((result / 'dvdroot_ps4/chr/a.dcx').read_bytes(), b'mod')
         self.assertEqual(list(refused.iterdir()), [])
 
-    def wine_folder_links(self):
-        """make_link as under Wine/Proton (GitHub issue #42): a folder link is made and lists, but
-        what it shows is not the game's folder (here an empty one)."""
-        decoy = self.root / 'decoy'
-        decoy.mkdir()
-        real = mods.make_link
-
-        def make_link(link, target):
-            if target.is_dir() and not mods.MIRROR_DIRECTORIES and self.game in target.parents:
-                return real(link, decoy)
-            return real(link, target)
-        return make_link
-
-    def test_overlay_whose_folder_links_do_not_open_copies_the_folders(self):
-        (self.game / 'sce_module').mkdir()
-        (self.game / 'sce_module' / 'libc.prx').write_bytes(b'libc')
-        a = self.mod('A')
-        from unittest import mock
-        with mock.patch.object(mods, 'make_link', self.wine_folder_links()):
-            result = mods.build_overlay(self.game, self.root / 'out', [('A', a)])
-        self.assertEqual((result / 'sce_module/libc.prx').read_bytes(), b'libc')
-        self.assertEqual((result / 'dvdroot_ps4/chr/a.dcx').read_bytes(), b'mod')
-        self.assertEqual((result / 'dvdroot_ps4/chr/b.dcx').read_bytes(), b'untouched')
-        self.assertEqual(len(list((self.root / 'out').iterdir())), 1)  # the first try removed
-
-    def test_overlay_without_working_links_starts_the_game_without_mods(self):
-        (self.game / 'sce_module').mkdir()
-        (self.game / 'sce_module' / 'libc.prx').write_bytes(b'libc')
-        a = self.mod('A')
-        from unittest import mock
-        with mock.patch.object(mods, 'make_link', self.wine_folder_links()), \
-                mock.patch.object(mods.os, 'link', side_effect=OSError(1, 'Incorrect function')), \
-                mock.patch.object(mods.tempfile, 'gettempdir', return_value=str(self.root / 'temp')):
-            (self.root / 'temp').mkdir()
-            result = mods.build_overlay(self.game, self.root / 'out', [('A', a)])
-        self.assertEqual(result, self.game.resolve())  # no copy of the whole game either
-        self.assertEqual(list((self.root / 'out').iterdir()), [])
-        self.assertEqual(list((self.root / 'temp').iterdir()), [])
-
     def test_executable_replacement_rejected(self):
         a = self.mod('A')
         (a / 'eboot.bin').write_bytes(b'unsupported')

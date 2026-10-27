@@ -154,43 +154,16 @@ def mod_files(folder):
 LINKED = {}
 UNTRUSTED_MOUNT_POINT = 448
 MIRROR_DIRECTORIES = False
-MIRROR_GAME = None  # the game folder of the overlay being made
 
 
-class UnresolvedLinks(OSError):
-    """The overlay's links do not lead to the game's files."""
-
-
-def _directory_link_followed(link, target):
-    """Whether `link` shows `target`'s entries and its files open. Under Wine/Proton a folder
-    link can be made and listed while the files in it are not found (GitHub issue #42: "No such
-    file or directory: ...\\sce_module\\libc.prx")."""
+def _directory_link_followed(link):
     try:
-        names = sorted(os.listdir(link))
-        if names != sorted(os.listdir(target)):
-            return False
+        os.listdir(link)
+        return True
     except OSError as error:
         if getattr(error, 'winerror', None) == UNTRUSTED_MOUNT_POINT:
             return False
-        if not target.is_dir():
-            raise
-        return False
-    first = next((name for name in names if (target / name).is_file()), None)
-    return first is None or (link / first).is_file()
-
-
-def _unresolved(overlay, game):
-    """The first of the game's top-level files, or the files in its top-level folders, that the
-    overlay does not show as a file; None when all do."""
-    for entry in game.iterdir():
-        if entry.is_file():
-            if not (overlay / entry.name).is_file():
-                return Path(entry.name)
-        elif entry.is_dir():
-            for inner in entry.iterdir():
-                if inner.is_file() and not (overlay / entry.name / inner.name).is_file():
-                    return Path(entry.name) / inner.name
-    return None
+        raise
 
 
 def _mirror_directory(link, target):
@@ -214,21 +187,18 @@ def make_link(link, target):
             import _winapi
             _winapi.CreateJunction(str(target), str(link))
             LINKED[str(link)] = target
-        if _directory_link_followed(link, target):
+        if _directory_link_followed(link):
             return
         remove_link(link)
         MIRROR_DIRECTORIES = True
-        print('Mods: this process may not follow folder links (Windows redirection trust, or '
-              'Wine/Proton); copying the folder structure with hard links instead', file=sys.stderr)
+        print('Mods: this process may not follow folder links (Windows redirection trust); '
+              'copying the folder structure with hard links instead', file=sys.stderr)
         _mirror_directory(link, target)
         return
     else:
         try:
             os.link(target, link)
-        except OSError as error:
-            if MIRROR_DIRECTORIES and MIRROR_GAME in target.parents:
-                # Mirrored folders hold every game file: copies would be the whole game.
-                raise UnresolvedLinks(f'no hard link to the game\'s {target.name} ({error})') from error
+        except OSError:
             shutil.copy2(target, link)
     LINKED[str(link)] = target
 
@@ -336,39 +306,16 @@ def build_overlay(game, out, mods):
             places.append(temp)
     for at, place in enumerate(places):
         try:
-            return _checked_overlay_at(game, place, replacements)
+            return _overlay_at(game, place, replacements)
         except OSError as error:
             if at == len(places) - 1:
-                if isinstance(error, UnresolvedLinks):
-                    # Better a start without mods (and the port's own generated files) than none.
-                    print(f'Mods: {error}; starting without mods. Report this with last_run.log.',
-                          file=sys.stderr)
-                    return game
                 raise
             print(f'Mods: no overlay in {place} ({error}); trying {places[at + 1]}', file=sys.stderr)
 
 
-def _checked_overlay_at(game, out, replacements):
-    """_overlay_at, checked: when the game's files do not open through its links (Wine/Proton,
-    GitHub issue #42), again with real folders of hard-linked or copied files; UnresolvedLinks
-    when they still do not."""
-    for mirror in (False, True):
-        overlay = _overlay_at(game, out, replacements, mirror)
-        missing = _unresolved(overlay, game)
-        if missing is None:
-            return overlay
-        remove_overlay(overlay, game)
-        if mirror or MIRROR_DIRECTORIES:
-            break
-        print(f'Mods: {missing} does not open through the overlay\'s folder links; copying the '
-              'folder structure with hard links instead', file=sys.stderr)
-    raise UnresolvedLinks(f'the overlay in {out} does not show the game\'s {missing}')
-
-
-def _overlay_at(game, out, replacements, mirror=False):
-    global MIRROR_DIRECTORIES, MIRROR_GAME
-    MIRROR_DIRECTORIES = mirror
-    MIRROR_GAME = game
+def _overlay_at(game, out, replacements):
+    global MIRROR_DIRECTORIES
+    MIRROR_DIRECTORIES = False
     LINKED.clear()
     overlay = Path(tempfile.mkdtemp(prefix='mod-game-', dir=out))
     try:
@@ -382,8 +329,12 @@ def _overlay_at(game, out, replacements, mirror=False):
                 parent = child(parent, part)
                 expand(parent)
             destination = child(parent, relative.parts[-1])
-            if is_link(destination):
-                replaced += link_target(destination).is_relative_to(game)
+            if is_link(destination) or (destination.is_file() and not source.is_dir()):
+                target = link_target(destination)
+                try:
+                    replaced += bool(target and target.is_relative_to(game))
+                except (ValueError, TypeError):
+                    replaced += 1
                 remove_link(destination)
             elif destination.exists():
                 raise ValueError(f'File/directory conflict: {relative}')

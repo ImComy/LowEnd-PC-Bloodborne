@@ -136,34 +136,6 @@ void bb_bindings_load(const char *ini_path) {
     fclose(file);
 }
 
-/* The numpad key an arrow or navigation key arrives as when it is sent without the extended-key
- * flag: AutoHotkey and other remappers (GitHub issue #105) send scan code 0x48 for Up, which SDL
- * reads as Keypad 8. A binding of either key is held by both, unless the twin has its own. */
-static int numpad_twin(int key) {
-    static const int PAIRS[][2] = {
-        {SDL_SCANCODE_UP, SDL_SCANCODE_KP_8}, {SDL_SCANCODE_DOWN, SDL_SCANCODE_KP_2},
-        {SDL_SCANCODE_LEFT, SDL_SCANCODE_KP_4}, {SDL_SCANCODE_RIGHT, SDL_SCANCODE_KP_6},
-        {SDL_SCANCODE_HOME, SDL_SCANCODE_KP_7}, {SDL_SCANCODE_END, SDL_SCANCODE_KP_1},
-        {SDL_SCANCODE_PAGEUP, SDL_SCANCODE_KP_9}, {SDL_SCANCODE_PAGEDOWN, SDL_SCANCODE_KP_3},
-        {SDL_SCANCODE_INSERT, SDL_SCANCODE_KP_0}, {SDL_SCANCODE_DELETE, SDL_SCANCODE_KP_PERIOD},
-    };
-    for (size_t i = 0; i < sizeof(PAIRS) / sizeof(*PAIRS); ++i) {
-        if (PAIRS[i][0] == key) return PAIRS[i][1];
-        if (PAIRS[i][1] == key) return PAIRS[i][0];
-    }
-    return 0;
-}
-
-static bool key_held(const bool *keys, int nkeys, int k) {
-    if (!keys || k <= 0 || k >= nkeys) return false;
-    if (keys[k]) return true;
-    const int twin = numpad_twin(k);
-    if (!twin || twin >= nkeys || !keys[twin]) return false;
-    for (int a = 0; a < BIND_COUNT; ++a)
-        if (g_key[a] == twin) return false;
-    return true;
-}
-
 void bb_bindings_apply(const bool *keys, int nkeys, uint32_t mouse, BindOutput *out) {
     bool held[BIND_COUNT], by_key[BIND_COUNT];
     out->buttons = 0;
@@ -173,7 +145,7 @@ void bb_bindings_apply(const bool *keys, int nkeys, uint32_t mouse, BindOutput *
     out->any = false;
     for (int a = 0; a < BIND_COUNT; ++a) {
         const int k = g_key[a], m = g_mouse[a];
-        by_key[a] = key_held(keys, nkeys, k);
+        by_key[a] = keys && k > 0 && k < nkeys && keys[k];
         held[a] = by_key[a] || (m && (mouse >> (m - 1)) & 1);
     }
     uint32_t key_buttons = 0;
