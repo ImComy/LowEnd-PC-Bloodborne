@@ -35,6 +35,7 @@ using Shader::HwStage;
 using Shader::Output;
 using Shader::SwStage;
 
+constexpr static auto SpirvVersion1_5 = 0x00010500U;
 constexpr static auto SpirvVersion1_6 = 0x00010600U;
 
 constexpr static std::array DescriptorHeapSizes = {
@@ -287,7 +288,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .max_viewport_width = instance.GetMaxViewportWidth(),
         .max_viewport_height = instance.GetMaxViewportHeight(),
         .max_shared_memory_size = instance.MaxComputeSharedMemorySize(),
-        .supported_spirv = SpirvVersion1_6,
+        .supported_spirv =
+            instance.ApiVersion() >= VK_API_VERSION_1_3 ? SpirvVersion1_6 : SpirvVersion1_5,
         .subgroup_size = instance.SubgroupSize(),
         .sparse_page_shift = sparse_page_shift,
         .support_int8 = instance.IsShaderInt8Supported(),

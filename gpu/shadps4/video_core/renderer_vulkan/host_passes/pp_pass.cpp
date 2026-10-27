@@ -15,7 +15,39 @@
 
 namespace Vulkan::HostPasses {
 
-void PostProcessingPass::Create(vk::Device device, const vk::Format surface_format) {
+void PostProcessingPass::Create(vk::Device device, const vk::Format surface_format,
+                                bool dynamic_rendering) {
+    this->device_handle = device;
+    this->dynamic_rendering = dynamic_rendering;
+
+    if (!dynamic_rendering) {
+        const vk::AttachmentDescription color_attachment{
+            .format = surface_format,
+            .samples = vk::SampleCountFlagBits::e1,
+            .loadOp = vk::AttachmentLoadOp::eClear,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+            .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+            .initialLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .finalLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        };
+        const vk::AttachmentReference color_ref{
+            .attachment = 0,
+            .layout = vk::ImageLayout::eColorAttachmentOptimal,
+        };
+        const vk::SubpassDescription subpass{
+            .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_ref,
+        };
+        render_pass = Check<"create pp render pass">(device.createRenderPassUnique({
+            .attachmentCount = 1,
+            .pAttachments = &color_attachment,
+            .subpassCount = 1,
+            .pSubpasses = &subpass,
+        }));
+    }
+
     boost::container::static_vector<vk::DescriptorSetLayoutBinding, 2> bindings{
         {
             .binding = 0,
@@ -150,8 +182,8 @@ void PostProcessingPass::Create(vk::Device device, const vk::Format surface_form
     };
 
     const vk::GraphicsPipelineCreateInfo pipeline_info{
-        .pNext = &pipeline_rendering_ci,
-        .stageCount = shaders_ci.size(),
+        .pNext = dynamic_rendering ? &pipeline_rendering_ci : nullptr,
+        .stageCount = static_cast<u32>(shaders_ci.size()),
         .pStages = shaders_ci.data(),
         .pVertexInputState = &vertex_input_info,
         .pInputAssemblyState = &input_assembly,
@@ -161,6 +193,8 @@ void PostProcessingPass::Create(vk::Device device, const vk::Format surface_form
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
         .layout = *pipeline_layout,
+        .renderPass = dynamic_rendering ? VK_NULL_HANDLE : *render_pass,
+        .subpass = 0,
     };
 
     pipeline = Check<"create post process pipeline">(device.createGraphicsPipelineUnique(
@@ -254,9 +288,44 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
     cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(Settings),
                          &settings);
 
-    cmdbuf.beginRendering(rendering_info);
-    cmdbuf.draw(3, 1, 0, 0);
-    cmdbuf.endRendering();
+    if (dynamic_rendering) {
+        cmdbuf.beginRendering(rendering_info);
+        cmdbuf.draw(3, 1, 0, 0);
+        cmdbuf.endRendering();
+    } else {
+        vk::Framebuffer fb{};
+        for (const auto& [view, fb_handle] : framebuffers) {
+            if (view == frame.image_view) {
+                fb = *fb_handle;
+                break;
+            }
+        }
+        if (!fb) {
+            auto new_fb = Check<"create pp framebuffer">(device_handle.createFramebufferUnique({
+                .renderPass = *render_pass,
+                .attachmentCount = 1,
+                .pAttachments = &frame.image_view,
+                .width = frame.width,
+                .height = frame.height,
+                .layers = 1,
+            }));
+            fb = *new_fb;
+            framebuffers.emplace_back(frame.image_view, std::move(new_fb));
+        }
+        const std::array clear_values{
+            vk::ClearValue{.color = vk::ClearColorValue{.float32 = std::array{0.0f, 0.0f, 0.0f, 0.0f}}},
+        };
+        const vk::RenderPassBeginInfo rp_begin{
+            .renderPass = *render_pass,
+            .framebuffer = fb,
+            .renderArea = {{0, 0}, {frame.width, frame.height}},
+            .clearValueCount = static_cast<u32>(clear_values.size()),
+            .pClearValues = clear_values.data(),
+        };
+        cmdbuf.beginRenderPass(rp_begin, vk::SubpassContents::eInline);
+        cmdbuf.draw(3, 1, 0, 0);
+        cmdbuf.endRenderPass();
+    }
 
     const auto post_barrier = vk::ImageMemoryBarrier2{
         .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,

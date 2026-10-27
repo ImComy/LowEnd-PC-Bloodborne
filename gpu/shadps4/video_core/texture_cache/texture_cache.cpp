@@ -65,6 +65,14 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
         std::max<u64>(std::min(device_local_memory - min_vacancy_critical, min_spacing_critical),
                       DEFAULT_CRITICAL_GC_MEMORY));
     trigger_gc_memory = static_cast<u64>((device_local_memory - mem_threshold) / 2);
+
+    if (!instance.IsIntegrated() && device_local_memory <= 4608_MB) {
+        // Enforce 2560 MiB critical threshold on 4GB discrete cards (e.g. Quadro K4200)
+        // to leave headroom for framebuffers, depth buffers, staging arenas, and Windows DWM.
+        critical_gc_memory = std::min(critical_gc_memory, static_cast<u64>(2560_MB));
+        pressure_gc_memory = std::min(pressure_gc_memory, static_cast<u64>(2048_MB));
+        trigger_gc_memory = std::min(trigger_gc_memory, static_cast<u64>(1792_MB));
+    }
 }
 
 TextureCache::~TextureCache() = default;
@@ -1153,9 +1161,14 @@ void TextureCache::GarbageCollectImages() {
         if (driver_budget != 0) {
             vram_critical = driver_budget / 100 * (instance.IsIntegrated() ? 95 : 90);
         }
-        const u64 budget = forced_budget && driver_budget ? std::min(forced_budget, driver_budget)
-                           : forced_budget                ? forced_budget
-                                                          : driver_budget;
+        u64 budget = forced_budget && driver_budget ? std::min(forced_budget, driver_budget)
+                     : forced_budget                ? forced_budget
+                                                    : driver_budget;
+        if (!forced_budget && !instance.IsIntegrated() && instance.GetTotalMemoryBudget() <= 4608_MB) {
+            // For 4GB discrete cards (e.g. Quadro K4200), cap the texture cache to 2560 MiB
+            // to leave 1536 MiB for framebuffers, depth buffers, staging arenas, and Windows DWM.
+            budget = std::min(budget, static_cast<u64>(2560_MB));
+        }
         if (instance.IsIntegrated() || forced_budget) {
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;

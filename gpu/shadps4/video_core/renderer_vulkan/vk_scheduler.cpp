@@ -19,6 +19,7 @@
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "bbport_threads.h"
 
@@ -63,65 +64,151 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     is_rendering = true;
     render_state = new_state;
 
-    std::array<vk::RenderingAttachmentInfo, 8> color_attachments;
+    if (instance.IsDynamicRenderingSupported()) {
+        std::array<vk::RenderingAttachmentInfo, 8> color_attachments;
+        for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
+            const auto& cb = render_state.color_attachments[i];
+            color_attachments[i] = vk::RenderingAttachmentInfo{
+                .imageView = cb.image_view,
+                .imageLayout = cb.image_layout,
+                .loadOp = cb.is_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+                .storeOp = vk::AttachmentStoreOp::eStore,
+                .clearValue = vk::ClearValue{.color = vk::ClearColorValue{.uint32 = cb.clear_value}},
+            };
+        }
+
+        const auto& db = render_state.depth_stencil_attachment;
+        const vk::RenderingAttachmentInfo depth_attachment = {
+            .imageView = db.image_view,
+            .imageLayout = db.image_layout,
+            .loadOp = db.depth_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue =
+                vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{.depth = std::bit_cast<float>(
+                                                                              db.clear_value[0])}},
+        };
+        const vk::RenderingAttachmentInfo stencil_attachment = {
+            .imageView = db.image_view,
+            .imageLayout = db.image_layout,
+            .loadOp = db.stencil_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue = vk::ClearValue{.depthStencil =
+                                             vk::ClearDepthStencilValue{.stencil = db.clear_value[1]}},
+        };
+
+        const vk::RenderingInfo rendering_info = {
+            .renderArea =
+                {
+                    .offset = {0, 0},
+                    .extent = {render_state.width, render_state.height},
+                },
+            .layerCount = render_state.num_layers,
+            .colorAttachmentCount = render_state.num_color_attachments,
+            .pColorAttachments = color_attachments.data(),
+            .pDepthAttachment = db.has_depth ? &depth_attachment : nullptr,
+            .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
+        };
+
+        if (!recording_threaded) {
+            current_cmdbuf.beginRendering(rendering_info);
+            return;
+        }
+        // The attachment infos live on this stack frame: the recorded closure keeps copies.
+        Record([info = rendering_info, color_attachments, depth_attachment,
+                stencil_attachment](vk::CommandBuffer cmdbuf) mutable {
+            info.pColorAttachments = color_attachments.data();
+            if (info.pDepthAttachment) {
+                info.pDepthAttachment = &depth_attachment;
+            }
+            if (info.pStencilAttachment) {
+                info.pStencilAttachment = &stencil_attachment;
+            }
+            cmdbuf.beginRendering(info);
+        });
+        return;
+    }
+
+    // Vulkan 1.2 Fallback: RenderPass & Framebuffer Virtualization Layer (RPFVL)
+    ExecutionRenderPassKey rp_key{};
+    rp_key.compat.num_color_attachments = render_state.num_color_attachments;
     for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
         const auto& cb = render_state.color_attachments[i];
-        color_attachments[i] = vk::RenderingAttachmentInfo{
-            .imageView = cb.image_view,
-            .imageLayout = cb.image_layout,
-            .loadOp = cb.is_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
-            .storeOp = vk::AttachmentStoreOp::eStore,
-            .clearValue = vk::ClearValue{.color = vk::ClearColorValue{.uint32 = cb.clear_value}},
-        };
+        if (cb.image_view && cb.format != vk::Format::eUndefined) {
+            rp_key.compat.color_formats[i] = cb.format;
+            rp_key.color_layouts[i] = cb.image_layout;
+            rp_key.color_load_ops[i] = cb.is_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
+            rp_key.color_store_ops[i] = vk::AttachmentStoreOp::eStore;
+        } else {
+            rp_key.compat.color_formats[i] = vk::Format::eUndefined;
+            rp_key.color_layouts[i] = vk::ImageLayout::eUndefined;
+            rp_key.color_load_ops[i] = vk::AttachmentLoadOp::eDontCare;
+            rp_key.color_store_ops[i] = vk::AttachmentStoreOp::eDontCare;
+        }
     }
 
     const auto& db = render_state.depth_stencil_attachment;
-    const vk::RenderingAttachmentInfo depth_attachment = {
-        .imageView = db.image_view,
-        .imageLayout = db.image_layout,
-        .loadOp = db.depth_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
-        .storeOp = vk::AttachmentStoreOp::eStore,
-        .clearValue =
-            vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{.depth = std::bit_cast<float>(
-                                                                          db.clear_value[0])}},
-    };
-    const vk::RenderingAttachmentInfo stencil_attachment = {
-        .imageView = db.image_view,
-        .imageLayout = db.image_layout,
-        .loadOp = db.stencil_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
-        .storeOp = vk::AttachmentStoreOp::eStore,
-        .clearValue = vk::ClearValue{.depthStencil =
-                                         vk::ClearDepthStencilValue{.stencil = db.clear_value[1]}},
-    };
+    const bool has_depth = db.has_depth && db.image_view && db.format != vk::Format::eUndefined;
+    const bool has_stencil = db.has_stencil && db.image_view && db.format != vk::Format::eUndefined;
+    if (has_depth || has_stencil) {
+        rp_key.compat.depth_format = has_depth ? db.format : vk::Format::eUndefined;
+        rp_key.compat.stencil_format = has_stencil ? db.format : vk::Format::eUndefined;
+        rp_key.depth_layout = db.image_layout;
+        rp_key.stencil_layout = db.image_layout;
+        rp_key.depth_load_op = db.depth_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
+        rp_key.depth_store_op = vk::AttachmentStoreOp::eStore;
+        rp_key.stencil_load_op = db.stencil_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
+        rp_key.stencil_store_op = vk::AttachmentStoreOp::eStore;
+    }
 
-    const vk::RenderingInfo rendering_info = {
-        .renderArea =
-            {
-                .offset = {0, 0},
-                .extent = {render_state.width, render_state.height},
+    const vk::RenderPass render_pass = instance.GetRenderPassCache().GetOrCreateExecutionRenderPass(rp_key);
+
+    FramebufferKey fb_key{};
+    fb_key.render_pass = render_pass;
+    fb_key.width = render_state.width;
+    fb_key.height = render_state.height;
+    fb_key.layers = render_state.num_layers;
+
+    boost::container::static_vector<vk::ClearValue, 9> clear_values;
+    u32 fb_attach_idx = 0;
+    for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
+        const auto& cb = render_state.color_attachments[i];
+        if (cb.image_view && cb.format != vk::Format::eUndefined) {
+            fb_key.attachments[fb_attach_idx++] = cb.image_view;
+            clear_values.push_back(vk::ClearValue{.color = vk::ClearColorValue{.uint32 = cb.clear_value}});
+        }
+    }
+    if (has_depth || has_stencil) {
+        fb_key.attachments[fb_attach_idx++] = db.image_view;
+        clear_values.push_back(vk::ClearValue{
+            .depthStencil = vk::ClearDepthStencilValue{
+                .depth = std::bit_cast<float>(db.clear_value[0]),
+                .stencil = db.clear_value[1],
             },
-        .layerCount = render_state.num_layers,
-        .colorAttachmentCount = render_state.num_color_attachments,
-        .pColorAttachments = color_attachments.data(),
-        .pDepthAttachment = db.has_depth ? &depth_attachment : nullptr,
-        .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
+        });
+    }
+    fb_key.num_attachments = fb_attach_idx;
+
+    const vk::Framebuffer framebuffer = instance.GetFramebufferCache().GetOrCreateFramebuffer(fb_key);
+
+    vk::RenderPassBeginInfo rp_begin = {
+        .renderPass = render_pass,
+        .framebuffer = framebuffer,
+        .renderArea = {
+            .offset = {0, 0},
+            .extent = {render_state.width, render_state.height},
+        },
+        .clearValueCount = static_cast<u32>(clear_values.size()),
+        .pClearValues = clear_values.data(),
     };
 
     if (!recording_threaded) {
-        current_cmdbuf.beginRendering(rendering_info);
+        current_cmdbuf.beginRenderPass(rp_begin, vk::SubpassContents::eInline);
         return;
     }
-    // The attachment infos live on this stack frame: the recorded closure keeps copies.
-    Record([info = rendering_info, color_attachments, depth_attachment,
-            stencil_attachment](vk::CommandBuffer cmdbuf) mutable {
-        info.pColorAttachments = color_attachments.data();
-        if (info.pDepthAttachment) {
-            info.pDepthAttachment = &depth_attachment;
-        }
-        if (info.pStencilAttachment) {
-            info.pStencilAttachment = &stencil_attachment;
-        }
-        cmdbuf.beginRendering(info);
+
+    Record([rp_begin, clear_values](vk::CommandBuffer cmdbuf) mutable {
+        rp_begin.pClearValues = clear_values.data();
+        cmdbuf.beginRenderPass(rp_begin, vk::SubpassContents::eInline);
     });
 }
 
@@ -130,7 +217,11 @@ void Scheduler::EndRendering() {
         return;
     }
     is_rendering = false;
-    Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
+    if (instance.IsDynamicRenderingSupported()) {
+        Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
+    } else {
+        Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
+    }
 }
 
 void Scheduler::TraceDirectRecording(void* caller) {

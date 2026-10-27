@@ -82,11 +82,17 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         .usage = ARENA_USAGE,
         .sharingMode = vk::SharingMode::eExclusive,
     };
-    const vk::DeviceBufferMemoryRequirements req_info = {
-        .pCreateInfo = &probe_ci,
-    };
     const auto device = instance.GetDevice();
-    const auto reqs = device.getBufferMemoryRequirements(req_info).memoryRequirements;
+    vk::MemoryRequirements reqs{};
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceBufferMemoryRequirements) {
+        const vk::DeviceBufferMemoryRequirements req_info = {
+            .pCreateInfo = &probe_ci,
+        };
+        reqs = device.getBufferMemoryRequirements(req_info).memoryRequirements;
+    } else {
+        auto buffer = device.createBufferUnique(probe_ci);
+        reqs = device.getBufferMemoryRequirements(*buffer.value);
+    }
     block_size = Common::AlignUp(std::max<u64>(reqs.alignment, MIN_BLOCK_SIZE), reqs.alignment);
     ASSERT_MSG(std::popcount(block_size) == 1, "Sparse block size {} is not a power of 2",
                block_size);

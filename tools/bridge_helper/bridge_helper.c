@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     get_instance_proc = (PFN_vkGetInstanceProcAddr)GetProcAddress(vulkan, "vkGetInstanceProcAddr");
     LOAD(NULL, vkCreateInstance);
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                                   .apiVersion = VK_API_VERSION_1_3};
+                                   .apiVersion = VK_API_VERSION_1_2};
     const VkInstanceCreateInfo instance_ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                               .pApplicationInfo = &app};
     VkInstance instance;

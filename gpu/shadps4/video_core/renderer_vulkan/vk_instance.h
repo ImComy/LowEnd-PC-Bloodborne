@@ -20,6 +20,9 @@ VK_DEFINE_HANDLE(VmaAllocator)
 
 namespace Vulkan {
 
+class RenderPassCache;
+class FramebufferCache;
+
 /// bbport: an allocation the VRAM budget refused, made past it instead (system memory if need
 /// be). Logged once per kind ("image", "buffer").
 void NoteOverBudget(const char* what);
@@ -54,12 +57,18 @@ public:
         return vk12_features.shaderFloat16;
     }
     bool IsSubgroupSizeControlEnabled() const {
-        return vk13_features.subgroupSizeControl;
+        return subgroup_size_control;
+    }
+    bool IsDynamicRenderingSupported() const {
+        return dynamic_rendering;
     }
 
     /// Largest VkBuffer the driver allows (2 GiB on AMD's Windows driver).
     u64 GetMaxBufferSize() const {
-        return vk13_props.maxBufferSize;
+        if (vk13_props.maxBufferSize != 0) {
+            return vk13_props.maxBufferSize;
+        }
+        return std::min<u64>(properties.limits.maxStorageBufferRange, 1ULL << 31);
     }
 
     vk::PhysicalDevice GetPhysicalDevice() const {
@@ -177,6 +186,11 @@ public:
         return depth_range_unrestricted;
     }
 
+    /// Returns true when VK_EXT_extended_dynamic_state is supported
+    bool IsExtendedDynamicStateSupported() const {
+        return extended_dynamic_state;
+    }
+
     /// Returns true when VK_EXT_extended_dynamic_state3 is supported
     bool IsExtendedDynamicState3Supported() const {
         return dynamic_state_3;
@@ -258,7 +272,10 @@ public:
 
     /// Returns true if the subgroup size can be set to match guest subgroup size
     bool IsSubgroupSize64Supported() const {
-        return vk13_features.subgroupSizeControl && vk13_props.maxSubgroupSize >= 64;
+        if (properties.apiVersion >= VK_API_VERSION_1_3) {
+            return vk13_features.subgroupSizeControl && vk13_props.maxSubgroupSize >= 64;
+        }
+        return subgroup_size_control && subgroup_size_control_props.maxSubgroupSize >= 64;
     }
 
     /// Returns true when VK_KHR_workgroup_memory_explicit_layout is supported.
@@ -499,6 +516,12 @@ public:
         return total_memory_budget;
     }
 
+    /// Returns the RenderPass cache (for Vulkan 1.2 fallback)
+    [[nodiscard]] RenderPassCache& GetRenderPassCache() const;
+
+    /// Returns the Framebuffer cache (for Vulkan 1.2 fallback)
+    [[nodiscard]] FramebufferCache& GetFramebufferCache() const;
+
     /// Determines if a format is supported for a set of feature flags.
     [[nodiscard]] bool IsFormatSupported(vk::Format format, vk::FormatFeatureFlags2 flags) const;
 
@@ -529,9 +552,15 @@ private:
     vk::PhysicalDeviceVulkan12Properties vk12_props;
     vk::PhysicalDeviceVulkan13Properties vk13_props;
     vk::PhysicalDevicePushDescriptorPropertiesKHR push_descriptor_props;
+    vk::PhysicalDeviceSubgroupSizeControlPropertiesEXT subgroup_size_control_props;
     vk::PhysicalDeviceFeatures features;
     vk::PhysicalDeviceVulkan12Features vk12_features;
     vk::PhysicalDeviceVulkan13Features vk13_features;
+    vk::PhysicalDeviceSynchronization2FeaturesKHR sync2_features;
+    vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT demote_features;
+    vk::PhysicalDeviceSubgroupSizeControlFeaturesEXT subgroup_size_control_features;
+    vk::PhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering_features;
+    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state_features;
     vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT dynamic_state_3_features;
     vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT shader_atomic_float2_features;
     vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR
@@ -556,6 +585,7 @@ private:
     bool amd_shader_explicit_vertex_parameter{};
     bool depth_clip_control{};
     bool depth_clip_enable{};
+    bool extended_dynamic_state{};
     bool dynamic_state_3{};
     bool depth_range_unrestricted{};
     bool vertex_input_dynamic_state{};
@@ -579,10 +609,16 @@ private:
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
     bool device_fault{};            // bbport: VK_EXT_device_fault (DeviceLost)
+    bool synchronization2{};
+    bool shader_demote_to_helper_invocation{};
+    bool subgroup_size_control{};
+    bool dynamic_rendering{};
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;
+    std::unique_ptr<RenderPassCache> render_pass_cache;
+    std::unique_ptr<FramebufferCache> framebuffer_cache;
 };
 
 } // namespace Vulkan

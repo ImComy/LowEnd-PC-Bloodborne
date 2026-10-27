@@ -22,7 +22,7 @@ function(add_host_shader FILENAME SHADER_NAME)
     add_custom_command(
         OUTPUT ${SOURCE_HEADER_FILE}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
-        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3
+        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.2
                 -o ${SOURCE_HEADER_FILE} --vn ${SYMBOL} --depfile ${DEPFILE}
                 ${SHADER_DEFINES} ${CMAKE_CURRENT_SOURCE_DIR}/${FILENAME}
         COMMAND ${CMAKE_COMMAND} "-DHEADER_FILE=${SOURCE_HEADER_FILE}"

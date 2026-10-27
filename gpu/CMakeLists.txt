@@ -108,7 +108,7 @@ function(add_host_shader FILENAME SHADER_NAME)
     list(TRANSFORM DEFINES PREPEND "-D")
     add_custom_command(OUTPUT ${OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
-        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
+        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.2 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
         COMMAND ${CMAKE_COMMAND} "-DHEADER_FILE=${OUT}" -P ${SHADER_SRC}/AddShaderHeaderInclude.cmake
         DEPENDS ${SHADER_SRC}/${FILENAME} VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)

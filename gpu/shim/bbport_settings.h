@@ -153,8 +153,8 @@ Values& Get();
 
 /// Reads the file, then the environment overrides. Called once at start.
 void Load();
-/// Checks the loaded choice before the first frame; unsupported FSR 4 uses FSR 3.1.
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411);
+/// Checks the loaded choice before the first frame; unsupported FSR 4 uses FSR 3.1; unsupported FP16 falls back to Off.
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool fp16 = true);
 /// After device creation: DLSS availability; a DLSS setting falls back to FSR 3.1 without it.
 void ConfigureDlssSupport(bool available, const char* problem);
 /// Startup-patched scene dimensions cannot change until run.sh prepares a new image.

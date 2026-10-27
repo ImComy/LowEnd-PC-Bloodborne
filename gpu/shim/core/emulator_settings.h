@@ -7,7 +7,7 @@
 #include <string>
 #include "common/types.h"
 
-u32 BbDisplayRefreshHz(); // bbgpu.cpp: the game's display's refresh rate, 60 when unknown
+u32 BbDisplayRefreshHz(); // bbgpu.cpp: primary display refresh rate, 60 when unknown
 
 enum GpuReadbacksMode : int { Disabled, Relaxed, Precise };
 

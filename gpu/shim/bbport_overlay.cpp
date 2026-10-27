@@ -34,6 +34,7 @@
 #include "imgui_internal.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -74,6 +75,9 @@ namespace BbOverlay {
 namespace {
 
 std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
+const Vulkan::Instance* s_instance{nullptr};
+vk::Format s_format{vk::Format::eUndefined};
+vk::RenderPass s_render_pass{VK_NULL_HANDLE};
 std::atomic<bool> initialized{false};
 std::atomic<bool> menu_open{false};
 std::atomic<std::int64_t> menu_opened_ms{0};
@@ -1782,6 +1786,9 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
         },
         const_cast<vk::Instance*>(&vk_instance));
 
+    s_instance = &instance;
+    s_format = format;
+
     const VkFormat color_format = static_cast<VkFormat>(format);
     ImGui_ImplVulkan_InitInfo info{};
     info.ApiVersion = instance.ApiVersion();
@@ -1793,12 +1800,29 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     info.DescriptorPoolSize = 256; // font atlas, the game's trophy icons, the notifications' pictures
     info.MinImageCount = std::max(image_count, 2u);
     info.ImageCount = std::max(image_count, 2u);
-    info.UseDynamicRendering = true;
-    info.PipelineInfoMain.PipelineRenderingCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &color_format,
-    };
+
+    if (instance.IsDynamicRenderingSupported()) {
+        info.UseDynamicRendering = true;
+        info.PipelineInfoMain.PipelineRenderingCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &color_format,
+        };
+    } else {
+        info.UseDynamicRendering = false;
+        Vulkan::ExecutionRenderPassKey rp_key{};
+        rp_key.compat.num_color_attachments = 1;
+        rp_key.compat.color_formats[0] = format;
+        rp_key.compat.depth_format = vk::Format::eUndefined;
+        rp_key.compat.stencil_format = vk::Format::eUndefined;
+        rp_key.compat.samples = vk::SampleCountFlagBits::e1;
+        rp_key.color_load_ops[0] = vk::AttachmentLoadOp::eLoad;
+        rp_key.color_store_ops[0] = vk::AttachmentStoreOp::eStore;
+        rp_key.color_layouts[0] = vk::ImageLayout::eColorAttachmentOptimal;
+        s_render_pass = instance.GetRenderPassCache().GetOrCreateExecutionRenderPass(rp_key);
+        info.PipelineInfoMain.RenderPass = static_cast<VkRenderPass>(s_render_pass);
+        info.PipelineInfoMain.Subpass = 0;
+    }
     if (!ImGui_ImplVulkan_Init(&info)) {
         std::printf("Overlay: ImGui Vulkan backend init failed\n");
         ImGui::DestroyContext();
@@ -2048,24 +2072,51 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     DrawWindows(float(extent.height));
     ImGui::Render();
 
-    const vk::RenderingAttachmentInfo attachment{
-        .imageView = view,
-        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .loadOp = vk::AttachmentLoadOp::eLoad,
-        .storeOp = vk::AttachmentStoreOp::eStore,
-    };
-    cmdbuf.beginRendering(vk::RenderingInfo{
-        .renderArea = {{0, 0}, extent},
-        .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &attachment,
-    });
-    {
-        // Font atlas uploads submit to the graphics queue themselves.
-        std::scoped_lock submit_lock{Vulkan::Scheduler::submit_mutex};
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
+    if (s_instance && s_instance->IsDynamicRenderingSupported()) {
+        const vk::RenderingAttachmentInfo attachment{
+            .imageView = view,
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+        };
+        cmdbuf.beginRendering(vk::RenderingInfo{
+            .renderArea = {{0, 0}, extent},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &attachment,
+        });
+        {
+            // Font atlas uploads submit to the graphics queue themselves.
+            std::scoped_lock submit_lock{Vulkan::Scheduler::submit_mutex};
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
+        }
+        cmdbuf.endRendering();
+    } else if (s_instance) {
+        Vulkan::FramebufferKey fb_key{};
+        fb_key.render_pass = s_render_pass;
+        fb_key.num_attachments = 1;
+        fb_key.attachments[0] = view;
+        fb_key.width = extent.width;
+        fb_key.height = extent.height;
+        fb_key.layers = 1;
+        const vk::Framebuffer framebuffer =
+            s_instance->GetFramebufferCache().GetOrCreateFramebuffer(fb_key);
+
+        const vk::RenderPassBeginInfo rp_begin = {
+            .renderPass = s_render_pass,
+            .framebuffer = framebuffer,
+            .renderArea = {{0, 0}, extent},
+            .clearValueCount = 0,
+            .pClearValues = nullptr,
+        };
+        cmdbuf.beginRenderPass(rp_begin, vk::SubpassContents::eInline);
+        {
+            // Font atlas uploads submit to the graphics queue themselves.
+            std::scoped_lock submit_lock{Vulkan::Scheduler::submit_mutex};
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
+        }
+        cmdbuf.endRenderPass();
     }
-    cmdbuf.endRendering();
 }
 
 } // namespace BbOverlay

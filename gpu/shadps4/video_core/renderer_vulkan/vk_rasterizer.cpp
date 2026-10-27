@@ -397,6 +397,9 @@ bool Rasterizer::UseDrawPipe() const {
 }
 
 bool Rasterizer::OnStageA() const {
+    if (!liverpool) {
+        return false;
+    }
 #ifdef _WIN32
     // bbport (Windows): libc++ compares std::thread::id through winpthreads' pthread_equal,
     // which asks the kernel (GetThreadId) for both threads: two system calls per check, many
@@ -439,7 +442,7 @@ bool Rasterizer::IsGpuSideThreadId(u32 tid) const {
     if (draw_pipe) {
         return tid == draw_pipe->StageBThreadId();
     }
-    return tid == liverpool->GetGpuCommandProcessorThreadId();
+    return liverpool ? (tid == liverpool->GetGpuCommandProcessorThreadId()) : false;
 }
 
 void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
@@ -2837,6 +2840,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         attachment.image_layout = image->backing->state.layout;
         attachment.clear_value = clear_value.color.uint32;
         attachment.is_clear = is_clear;
+        attachment.format = image_view.info.format;
 
         if (reduced) {
             const auto target = scene_targets->Attachment(image_id, desc.view_info);
@@ -2900,6 +2904,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         attachment.image_layout = image.backing->state.layout;
         attachment.clear_value = {};
         attachment.is_clear = 0;
+        attachment.format = image_view.info.format;
 
         if (regs.depth_buffer.DepthValid()) {
             attachment.clear_value[0] = is_depth_clear ? std::bit_cast<u32>(regs.depth_clear) : 0u;

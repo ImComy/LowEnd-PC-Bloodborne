@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/texture_cache/blit_helper.h"
@@ -98,6 +99,7 @@ void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, u32 num_sample
     state.depth_stencil_attachment.image_layout = vk::ImageLayout::eDepthAttachmentOptimal;
     state.depth_stencil_attachment.has_depth = true;
     state.depth_stencil_attachment.depth_clear = true;
+    state.depth_stencil_attachment.format = dst_pixel_format;
     scheduler.BeginRendering(state);
 
     const auto cmdbuf = scheduler.CommandBuffer();
@@ -133,13 +135,21 @@ void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, u32 num_sample
         .minDepth = 0.f,
         .maxDepth = 1.f,
     };
-    cmdbuf.setViewportWithCount(viewport);
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetViewportWithCount) {
+        cmdbuf.setViewportWithCount(viewport);
+    } else {
+        cmdbuf.setViewport(0, viewport);
+    }
 
     const vk::Rect2D scissor = {
         .offset = {0, 0},
         .extent = {state.width, state.height},
     };
-    cmdbuf.setScissorWithCount(scissor);
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetScissorWithCount) {
+        cmdbuf.setScissorWithCount(scissor);
+    } else {
+        cmdbuf.setScissor(0, scissor);
+    }
 
     cmdbuf.draw(3, 1, 0, 0);
 
@@ -199,6 +209,7 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
     state.color_attachments[0].image_view = dst_view;
     state.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
     state.color_attachments[0].is_clear = true;
+    state.color_attachments[0].format = pixel_format;
     scheduler.BeginRendering(state);
 
     const auto cmdbuf = scheduler.CommandBuffer();
@@ -234,13 +245,21 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
         .minDepth = 0.f,
         .maxDepth = 1.f,
     };
-    cmdbuf.setViewportWithCount(viewport);
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetViewportWithCount) {
+        cmdbuf.setViewportWithCount(viewport);
+    } else {
+        cmdbuf.setViewport(0, viewport);
+    }
 
     const vk::Rect2D scissor = {
         .offset = {0, 0},
         .extent = {state.width, state.height},
     };
-    cmdbuf.setScissorWithCount(scissor);
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetScissorWithCount) {
+        cmdbuf.setScissorWithCount(scissor);
+    } else {
+        cmdbuf.setScissor(0, scissor);
+    }
 
     cmdbuf.draw(3, 1, 0, 0);
 
@@ -298,8 +317,12 @@ void BlitHelper::CreateColorToMSDepthPipeline(const MsPipelineKey& key) {
         .depthWriteEnable = true,
         .depthCompareOp = vk::CompareOp::eAlways,
     };
-    const std::array dynamic_states = {vk::DynamicState::eViewportWithCount,
-                                       vk::DynamicState::eScissorWithCount};
+    const std::array dynamic_states =
+        instance.IsExtendedDynamicStateSupported()
+            ? std::array{vk::DynamicState::eViewportWithCount,
+                         vk::DynamicState::eScissorWithCount}
+            : std::array{vk::DynamicState::eViewport,
+                         vk::DynamicState::eScissor};
     const vk::PipelineDynamicStateCreateInfo dynamic_info = {
         .dynamicStateCount = static_cast<u32>(dynamic_states.size()),
         .pDynamicStates = dynamic_states.data(),
@@ -325,12 +348,26 @@ void BlitHelper::CreateColorToMSDepthPipeline(const MsPipelineKey& key) {
     };
 
     const vk::PipelineColorBlendStateCreateInfo color_blending{};
-    const vk::PipelineViewportStateCreateInfo viewport_info{};
+    const vk::PipelineViewportStateCreateInfo viewport_info{
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
     const vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
     const vk::PipelineRasterizationStateCreateInfo raster_state{.lineWidth = 1.f};
 
+    vk::RenderPass compatible_render_pass = VK_NULL_HANDLE;
+    if (!instance.IsDynamicRenderingSupported()) {
+        Vulkan::CompatibleRenderPassKey rp_key{};
+        rp_key.num_color_attachments = 0;
+        rp_key.depth_format = key.attachment_format;
+        rp_key.stencil_format = vk::Format::eUndefined;
+        rp_key.samples = ToSampleCount(key.num_samples);
+        compatible_render_pass =
+            instance.GetRenderPassCache().GetOrCreateCompatibleRenderPass(rp_key);
+    }
+
     const vk::GraphicsPipelineCreateInfo pipeline_info = {
-        .pNext = &pipeline_rendering_ci,
+        .pNext = instance.IsDynamicRenderingSupported() ? &pipeline_rendering_ci : nullptr,
         .stageCount = static_cast<u32>(shader_stages.size()),
         .pStages = shader_stages.data(),
         .pVertexInputState = &vertex_input_info,
@@ -342,6 +379,8 @@ void BlitHelper::CreateColorToMSDepthPipeline(const MsPipelineKey& key) {
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
         .layout = *single_texture_pl_layout,
+        .renderPass = compatible_render_pass,
+        .subpass = 0,
     };
 
     auto [pipeline_result, pipeline] =
@@ -365,8 +404,12 @@ void BlitHelper::CreateMsCopyPipeline(const MsPipelineKey& key) {
         .depthWriteEnable = false,
         .depthCompareOp = vk::CompareOp::eAlways,
     };
-    const std::array dynamic_states = {vk::DynamicState::eViewportWithCount,
-                                       vk::DynamicState::eScissorWithCount};
+    const std::array dynamic_states =
+        instance.IsExtendedDynamicStateSupported()
+            ? std::array{vk::DynamicState::eViewportWithCount,
+                         vk::DynamicState::eScissorWithCount}
+            : std::array{vk::DynamicState::eViewport,
+                         vk::DynamicState::eScissor};
     const vk::PipelineDynamicStateCreateInfo dynamic_info = {
         .dynamicStateCount = static_cast<u32>(dynamic_states.size()),
         .pDynamicStates = dynamic_states.data(),
@@ -403,12 +446,27 @@ void BlitHelper::CreateMsCopyPipeline(const MsPipelineKey& key) {
         .attachmentCount = 1u,
         .pAttachments = &attachment,
     };
-    const vk::PipelineViewportStateCreateInfo viewport_info{};
+    const vk::PipelineViewportStateCreateInfo viewport_info{
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
     const vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
     const vk::PipelineRasterizationStateCreateInfo raster_state{.lineWidth = 1.f};
 
+    vk::RenderPass compatible_render_pass = VK_NULL_HANDLE;
+    if (!instance.IsDynamicRenderingSupported()) {
+        Vulkan::CompatibleRenderPassKey rp_key{};
+        rp_key.num_color_attachments = 1;
+        rp_key.color_formats[0] = key.attachment_format;
+        rp_key.depth_format = vk::Format::eUndefined;
+        rp_key.stencil_format = vk::Format::eUndefined;
+        rp_key.samples = ToSampleCount(key.num_samples);
+        compatible_render_pass =
+            instance.GetRenderPassCache().GetOrCreateCompatibleRenderPass(rp_key);
+    }
+
     const vk::GraphicsPipelineCreateInfo pipeline_info = {
-        .pNext = &pipeline_rendering_ci,
+        .pNext = instance.IsDynamicRenderingSupported() ? &pipeline_rendering_ci : nullptr,
         .stageCount = static_cast<u32>(shader_stages.size()),
         .pStages = shader_stages.data(),
         .pVertexInputState = &vertex_input_info,
@@ -420,6 +478,8 @@ void BlitHelper::CreateMsCopyPipeline(const MsPipelineKey& key) {
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
         .layout = *single_texture_pl_layout,
+        .renderPass = compatible_render_pass,
+        .subpass = 0,
     };
 
     auto [pipeline_result, pipeline] =

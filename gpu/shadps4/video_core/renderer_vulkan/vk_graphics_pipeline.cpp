@@ -11,6 +11,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -134,19 +135,31 @@ GraphicsPipeline::GraphicsPipeline(
 
     const vk::PipelineViewportStateCreateInfo viewport_info = {
         .pNext = instance.IsDepthClipControlSupported() ? &clip_control : nullptr,
+        .viewportCount = 1,
+        .scissorCount = 1,
     };
 
-    boost::container::static_vector<vk::DynamicState, 32> dynamic_states = {
-        vk::DynamicState::eViewportWithCount,  vk::DynamicState::eScissorWithCount,
-        vk::DynamicState::eBlendConstants,     vk::DynamicState::eDepthTestEnable,
-        vk::DynamicState::eDepthWriteEnable,   vk::DynamicState::eDepthCompareOp,
-        vk::DynamicState::eDepthBiasEnable,    vk::DynamicState::eDepthBias,
-        vk::DynamicState::eStencilTestEnable,  vk::DynamicState::eStencilReference,
-        vk::DynamicState::eStencilCompareMask, vk::DynamicState::eStencilWriteMask,
-        vk::DynamicState::eStencilOp,          vk::DynamicState::eCullMode,
-        vk::DynamicState::eFrontFace,          vk::DynamicState::eRasterizerDiscardEnable,
-        vk::DynamicState::eLineWidth,          vk::DynamicState::ePrimitiveRestartEnable,
-    };
+    boost::container::static_vector<vk::DynamicState, 32> dynamic_states;
+    if (instance.IsExtendedDynamicStateSupported()) {
+        dynamic_states = {
+            vk::DynamicState::eViewportWithCount,  vk::DynamicState::eScissorWithCount,
+            vk::DynamicState::eBlendConstants,     vk::DynamicState::eDepthTestEnable,
+            vk::DynamicState::eDepthWriteEnable,   vk::DynamicState::eDepthCompareOp,
+            vk::DynamicState::eDepthBiasEnable,    vk::DynamicState::eDepthBias,
+            vk::DynamicState::eStencilTestEnable,  vk::DynamicState::eStencilReference,
+            vk::DynamicState::eStencilCompareMask, vk::DynamicState::eStencilWriteMask,
+            vk::DynamicState::eStencilOp,          vk::DynamicState::eCullMode,
+            vk::DynamicState::eFrontFace,          vk::DynamicState::eRasterizerDiscardEnable,
+            vk::DynamicState::eLineWidth,          vk::DynamicState::ePrimitiveRestartEnable,
+        };
+    } else {
+        dynamic_states = {
+            vk::DynamicState::eViewport,           vk::DynamicState::eScissor,
+            vk::DynamicState::eBlendConstants,     vk::DynamicState::eDepthBias,
+            vk::DynamicState::eStencilReference,   vk::DynamicState::eStencilCompareMask,
+            vk::DynamicState::eStencilWriteMask,   vk::DynamicState::eLineWidth,
+        };
+    }
 
     if (instance.IsDepthBoundsSupported()) {
         dynamic_states.push_back(vk::DynamicState::eDepthBoundsTestEnable);
@@ -403,8 +416,25 @@ GraphicsPipeline::GraphicsPipeline(
     // In practice, we use dynamic state for all of it.
     constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {};
 
+    vk::RenderPass compatible_render_pass = VK_NULL_HANDLE;
+    if (!instance.IsDynamicRenderingSupported()) {
+        CompatibleRenderPassKey rp_key{};
+        rp_key.num_color_attachments = key.num_color_attachments;
+        for (u32 i = 0; i < key.num_color_attachments; ++i) {
+            rp_key.color_formats[i] = color_formats[i];
+        }
+        rp_key.depth_format = key.z_format != AmdGpu::DepthBuffer::ZFormat::Invalid
+                                  ? depth_format
+                                  : vk::Format::eUndefined;
+        rp_key.stencil_format = key.stencil_format != AmdGpu::DepthBuffer::StencilFormat::Invalid
+                                    ? depth_format
+                                    : vk::Format::eUndefined;
+        rp_key.samples = LiverpoolToVK::NumSamples(key.num_samples, instance.GetColorSampleCounts());
+        compatible_render_pass = instance.GetRenderPassCache().GetOrCreateCompatibleRenderPass(rp_key);
+    }
+
     const vk::GraphicsPipelineCreateInfo pipeline_info = {
-        .pNext = &pipeline_rendering_ci,
+        .pNext = instance.IsDynamicRenderingSupported() ? &pipeline_rendering_ci : nullptr,
         .stageCount = static_cast<u32>(shader_stages.size()),
         .pStages = shader_stages.data(),
         .pVertexInputState = !instance.IsVertexInputDynamicState() ? &vertex_input_info : nullptr,
@@ -418,6 +448,8 @@ GraphicsPipeline::GraphicsPipeline(
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
         .layout = *pipeline_layout,
+        .renderPass = compatible_render_pass,
+        .subpass = 0,
     };
 
     auto [pipeline_result, pipe] =

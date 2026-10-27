@@ -35,11 +35,12 @@ namespace Vulkan {
 class Instance;
 
 struct RenderAttachment {
-    vk::ImageView image_view;
-    vk::ImageLayout image_layout;
-    std::array<u32, 4> clear_value;
+    vk::ImageView image_view{};
+    vk::Format format{vk::Format::eUndefined};
+    vk::ImageLayout image_layout{};
+    std::array<u32, 4> clear_value{};
     union {
-        u32 is_clear;
+        u32 is_clear{0};
         struct {
             bool has_depth;
             bool depth_clear;
@@ -47,6 +48,7 @@ struct RenderAttachment {
             bool stencil_clear;
         };
     };
+    u32 pad{0};
 };
 static_assert(std::has_unique_object_representations_v<RenderAttachment>);
 
@@ -187,28 +189,42 @@ struct DynamicState {
         using Face = vk::StencilFaceFlagBits;
         if (dirty_state.viewports) {
             dirty_state.viewports = false;
-            emit([v = viewports](vk::CommandBuffer c) { c.setViewportWithCount(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetViewportWithCount) {
+                emit([v = viewports](vk::CommandBuffer c) { c.setViewportWithCount(v); });
+            } else {
+                emit([v = viewports](vk::CommandBuffer c) { c.setViewport(0, v); });
+            }
         }
         if (dirty_state.scissors) {
             dirty_state.scissors = false;
-            emit([v = scissors](vk::CommandBuffer c) { c.setScissorWithCount(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetScissorWithCount) {
+                emit([v = scissors](vk::CommandBuffer c) { c.setScissorWithCount(v); });
+            } else {
+                emit([v = scissors](vk::CommandBuffer c) { c.setScissor(0, v); });
+            }
         }
         if (dirty_state.depth_test_enabled) {
             dirty_state.depth_test_enabled = false;
-            emit([v = depth_test_enabled](vk::CommandBuffer c) { c.setDepthTestEnable(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetDepthTestEnable) {
+                emit([v = depth_test_enabled](vk::CommandBuffer c) { c.setDepthTestEnable(v); });
+            }
         }
         if (dirty_state.depth_write_enabled) {
             // Must be set in a command buffer even if depth test is disabled.
             dirty_state.depth_write_enabled = false;
-            emit([v = depth_write_enabled](vk::CommandBuffer c) { c.setDepthWriteEnable(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetDepthWriteEnable) {
+                emit([v = depth_write_enabled](vk::CommandBuffer c) { c.setDepthWriteEnable(v); });
+            }
         }
         if (depth_test_enabled && dirty_state.depth_compare_op) {
             dirty_state.depth_compare_op = false;
-            emit([v = depth_compare_op](vk::CommandBuffer c) { c.setDepthCompareOp(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetDepthCompareOp) {
+                emit([v = depth_compare_op](vk::CommandBuffer c) { c.setDepthCompareOp(v); });
+            }
         }
         if (dirty_state.depth_bounds_test_enabled) {
             dirty_state.depth_bounds_test_enabled = false;
-            if (depth_bounds_supported) {
+            if (depth_bounds_supported && VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetDepthBoundsTestEnable) {
                 emit([v = depth_bounds_test_enabled](vk::CommandBuffer c) {
                     c.setDepthBoundsTestEnable(v);
                 });
@@ -224,7 +240,9 @@ struct DynamicState {
         }
         if (dirty_state.depth_bias_enabled) {
             dirty_state.depth_bias_enabled = false;
-            emit([v = depth_bias_enabled](vk::CommandBuffer c) { c.setDepthBiasEnable(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetDepthBiasEnable) {
+                emit([v = depth_bias_enabled](vk::CommandBuffer c) { c.setDepthBiasEnable(v); });
+            }
         }
         if (depth_bias_enabled && dirty_state.depth_bias) {
             dirty_state.depth_bias = false;
@@ -233,23 +251,27 @@ struct DynamicState {
         }
         if (dirty_state.stencil_test_enabled) {
             dirty_state.stencil_test_enabled = false;
-            emit([v = stencil_test_enabled](vk::CommandBuffer c) { c.setStencilTestEnable(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetStencilTestEnable) {
+                emit([v = stencil_test_enabled](vk::CommandBuffer c) { c.setStencilTestEnable(v); });
+            }
         }
         if (stencil_test_enabled) {
-            const auto ops = [&](Face face, const StencilOps& o) {
-                emit([face, o](vk::CommandBuffer c) {
-                    c.setStencilOp(face, o.fail_op, o.pass_op, o.depth_fail_op, o.compare_op);
-                });
-            };
-            if (dirty_state.stencil_front_ops && dirty_state.stencil_back_ops &&
-                stencil_front_ops == stencil_back_ops) {
-                ops(Face::eFrontAndBack, stencil_front_ops);
-            } else {
-                if (dirty_state.stencil_front_ops) {
-                    ops(Face::eFront, stencil_front_ops);
-                }
-                if (dirty_state.stencil_back_ops) {
-                    ops(Face::eBack, stencil_back_ops);
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetStencilOp) {
+                const auto ops = [&](Face face, const StencilOps& o) {
+                    emit([face, o](vk::CommandBuffer c) {
+                        c.setStencilOp(face, o.fail_op, o.pass_op, o.depth_fail_op, o.compare_op);
+                    });
+                };
+                if (dirty_state.stencil_front_ops && dirty_state.stencil_back_ops &&
+                    stencil_front_ops == stencil_back_ops) {
+                    ops(Face::eFrontAndBack, stencil_front_ops);
+                } else {
+                    if (dirty_state.stencil_front_ops) {
+                        ops(Face::eFront, stencil_front_ops);
+                    }
+                    if (dirty_state.stencil_back_ops) {
+                        ops(Face::eBack, stencil_back_ops);
+                    }
                 }
             }
             dirty_state.stencil_front_ops = dirty_state.stencil_back_ops = false;
@@ -304,23 +326,31 @@ struct DynamicState {
         }
         if (dirty_state.primitive_restart_enable) {
             dirty_state.primitive_restart_enable = false;
-            emit([v = primitive_restart_enable](vk::CommandBuffer c) {
-                c.setPrimitiveRestartEnable(v);
-            });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetPrimitiveRestartEnable) {
+                emit([v = primitive_restart_enable](vk::CommandBuffer c) {
+                    c.setPrimitiveRestartEnable(v);
+                });
+            }
         }
         if (dirty_state.rasterizer_discard_enable) {
             dirty_state.rasterizer_discard_enable = false;
-            emit([v = rasterizer_discard_enable](vk::CommandBuffer c) {
-                c.setRasterizerDiscardEnable(v);
-            });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetRasterizerDiscardEnable) {
+                emit([v = rasterizer_discard_enable](vk::CommandBuffer c) {
+                    c.setRasterizerDiscardEnable(v);
+                });
+            }
         }
         if (dirty_state.cull_mode) {
             dirty_state.cull_mode = false;
-            emit([v = cull_mode](vk::CommandBuffer c) { c.setCullMode(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetCullMode) {
+                emit([v = cull_mode](vk::CommandBuffer c) { c.setCullMode(v); });
+            }
         }
         if (dirty_state.front_face) {
             dirty_state.front_face = false;
-            emit([v = front_face](vk::CommandBuffer c) { c.setFrontFace(v); });
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetFrontFace) {
+                emit([v = front_face](vk::CommandBuffer c) { c.setFrontFace(v); });
+            }
         }
         if (dirty_state.blend_constants) {
             dirty_state.blend_constants = false;

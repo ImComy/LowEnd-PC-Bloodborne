@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -248,7 +249,33 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
     });
     const auto pipeline = ResamplePipeline(format, stencil);
     const auto layout = *resample_layout;
-    scheduler.Record([=](vk::CommandBuffer cmd) {
+
+    vk::RenderPass rp = VK_NULL_HANDLE;
+    vk::Framebuffer fb = VK_NULL_HANDLE;
+    if (!instance.IsDynamicRenderingSupported()) {
+        ExecutionRenderPassKey rp_key{};
+        rp_key.compat.depth_format = format;
+        rp_key.compat.stencil_format = stencil ? format : vk::Format::eUndefined;
+        rp_key.depth_layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        rp_key.stencil_layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        rp_key.depth_load_op = vk::AttachmentLoadOp::eDontCare;
+        rp_key.depth_store_op = vk::AttachmentStoreOp::eStore;
+        rp_key.stencil_load_op =
+            stencil_bits ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eDontCare;
+        rp_key.stencil_store_op = vk::AttachmentStoreOp::eStore;
+        rp = instance.GetRenderPassCache().GetOrCreateExecutionRenderPass(rp_key);
+
+        FramebufferKey fb_key{};
+        fb_key.render_pass = rp;
+        fb_key.num_attachments = 1;
+        fb_key.attachments[0] = target_view;
+        fb_key.width = dst_size.width;
+        fb_key.height = dst_size.height;
+        fb_key.layers = 1;
+        fb = instance.GetFramebufferCache().GetOrCreateFramebuffer(fb_key);
+    }
+
+    scheduler.Record([=, use_dynamic = instance.IsDynamicRenderingSupported()](vk::CommandBuffer cmd) {
         const vk::RenderingAttachmentInfo attachment{
             .imageView = target_view,
             .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
@@ -260,11 +287,25 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
             stencil_attachment.loadOp = vk::AttachmentLoadOp::eClear;
             stencil_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{0.f, 0};
         }
-        cmd.beginRendering({
-            .renderArea = {{0, 0}, dst_size}, .layerCount = 1,
-            .pDepthAttachment = &attachment,
-            .pStencilAttachment = stencil ? &stencil_attachment : nullptr,
-        });
+        if (use_dynamic) {
+            cmd.beginRendering({
+                .renderArea = {{0, 0}, dst_size}, .layerCount = 1,
+                .pDepthAttachment = &attachment,
+                .pStencilAttachment = stencil ? &stencil_attachment : nullptr,
+            });
+        } else {
+            const std::array clear_values{
+                vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{0.f, 0}},
+            };
+            const vk::RenderPassBeginInfo rp_begin{
+                .renderPass = rp,
+                .framebuffer = fb,
+                .renderArea = {{0, 0}, dst_size},
+                .clearValueCount = stencil_bits ? 1u : 0u,
+                .pClearValues = clear_values.data(),
+            };
+            cmd.beginRenderPass(rp_begin, vk::SubpassContents::eInline);
+        }
         const std::array infos{
             vk::DescriptorImageInfo{{}, depth_view, vk::ImageLayout::eShaderReadOnlyOptimal},
             vk::DescriptorImageInfo{{}, stencil_view, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -281,9 +322,18 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
                                  vk::ArrayProxy<const vk::WriteDescriptorSet>(
                                      stencil ? 2u : 1u, writes.data()));
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-        cmd.setViewportWithCount(vk::Viewport{0.f, 0.f, float(dst_size.width),
-                                              float(dst_size.height), 0.f, 1.f});
-        cmd.setScissorWithCount(vk::Rect2D{{0, 0}, dst_size});
+        if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetViewportWithCount) {
+            cmd.setViewportWithCount(vk::Viewport{0.f, 0.f, float(dst_size.width),
+                                                  float(dst_size.height), 0.f, 1.f});
+        } else {
+            cmd.setViewport(0, vk::Viewport{0.f, 0.f, float(dst_size.width),
+                                            float(dst_size.height), 0.f, 1.f});
+        }
+        if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetScissorWithCount) {
+            cmd.setScissorWithCount(vk::Rect2D{{0, 0}, dst_size});
+        } else {
+            cmd.setScissor(0, vk::Rect2D{{0, 0}, dst_size});
+        }
         if (stencil_bits) {
             // Copy depth first, then reconstruct all eight stencil bits without needing
             // VK_EXT_shader_stencil_export (e.g. Pascal). Discard keeps unset bits clear.
@@ -296,7 +346,11 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
         } else {
             cmd.draw(3, 1, 0, 0);
         }
-        cmd.endRendering();
+        if (use_dynamic) {
+            cmd.endRendering();
+        } else {
+            cmd.endRenderPass();
+        }
     });
     // The guest pipelines' dynamic state must be emitted again after this pipeline.
     scheduler.GetDynamicState().Invalidate();
@@ -351,10 +405,16 @@ vk::Pipeline SceneTargets::ResamplePipeline(vk::Format format, bool stencil) {
         .depthCompareOp = vk::CompareOp::eAlways,
         .stencilTestEnable = stencil, .front = stencil_op, .back = stencil_op,
     };
-    const std::array dynamic_states{vk::DynamicState::eViewportWithCount,
-                                    vk::DynamicState::eScissorWithCount,
-                                    vk::DynamicState::eStencilWriteMask,
-                                    vk::DynamicState::eStencilReference};
+    const std::array dynamic_states =
+        instance.IsExtendedDynamicStateSupported()
+            ? std::array{vk::DynamicState::eViewportWithCount,
+                         vk::DynamicState::eScissorWithCount,
+                         vk::DynamicState::eStencilWriteMask,
+                         vk::DynamicState::eStencilReference}
+            : std::array{vk::DynamicState::eViewport,
+                         vk::DynamicState::eScissor,
+                         vk::DynamicState::eStencilWriteMask,
+                         vk::DynamicState::eStencilReference};
     const vk::PipelineDynamicStateCreateInfo dynamic_info{
         .dynamicStateCount = stencil_bits ? 4u : 2u, .pDynamicStates = dynamic_states.data(),
     };
@@ -371,16 +431,31 @@ vk::Pipeline SceneTargets::ResamplePipeline(vk::Format format, bool stencil) {
         .stencilAttachmentFormat = stencil ? format : vk::Format::eUndefined,
     };
     const vk::PipelineColorBlendStateCreateInfo color_blending{};
-    const vk::PipelineViewportStateCreateInfo viewport_info{};
+    const vk::PipelineViewportStateCreateInfo viewport_info{
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
     const vk::PipelineVertexInputStateCreateInfo vertex_input{};
     const vk::PipelineRasterizationStateCreateInfo raster{.lineWidth = 1.f};
+
+    vk::RenderPass compatible_pass = VK_NULL_HANDLE;
+    if (!instance.IsDynamicRenderingSupported()) {
+        CompatibleRenderPassKey rp_key{};
+        rp_key.depth_format = format;
+        rp_key.stencil_format = stencil ? format : vk::Format::eUndefined;
+        compatible_pass = instance.GetRenderPassCache().GetOrCreateCompatibleRenderPass(rp_key);
+    }
+
     auto pipeline = Check(instance.GetDevice().createGraphicsPipelineUnique(VK_NULL_HANDLE, {
-        .pNext = &rendering, .stageCount = u32(stages.size()), .pStages = stages.data(),
+        .pNext = instance.IsDynamicRenderingSupported() ? &rendering : nullptr,
+        .stageCount = u32(stages.size()), .pStages = stages.data(),
         .pVertexInputState = &vertex_input, .pInputAssemblyState = &input_assembly,
         .pViewportState = &viewport_info, .pRasterizationState = &raster,
         .pMultisampleState = &multisampling, .pDepthStencilState = &depth_state,
         .pColorBlendState = &color_blending, .pDynamicState = &dynamic_info,
         .layout = *resample_layout,
+        .renderPass = compatible_pass,
+        .subpass = 0,
     }));
     const auto result = *pipeline;
     resample_pipelines.emplace_back(key, std::move(pipeline));

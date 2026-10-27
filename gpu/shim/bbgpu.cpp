@@ -185,14 +185,9 @@ std::condition_variable g_window_cv;
 bool g_window_ready;
 } // namespace
 
-SDL_DisplayID BbGameDisplay(); // window.cpp: the monitor the window opened on, 0 before
-
-// The refresh rate of the monitor the game opened on (BB_DISPLAY, the launcher's Monitor). The
-// primary one's capped an uncapped game at 60 FPS on a faster second monitor (GitHub issue #141).
 u32 BbDisplayRefreshHz() {
     static const u32 hz = [] {
-        const SDL_DisplayID display = BbGameDisplay();
-        const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display ? display : SDL_GetPrimaryDisplay());
+        const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
         const u32 rate = mode && mode->refresh_rate > 0 ? u32(mode->refresh_rate + 0.5f) : 60;
         std::printf("GPU: vblank follows the display refresh rate, %u Hz\n", rate);
         return std::max<u32>(rate, 60);

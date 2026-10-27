@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/texture_cache/image.h"
 
 #include <algorithm>
@@ -161,7 +162,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     // bbport: frames are composed in RGBA8 (what frame generation reads and writes) and
     // blitted into the swapchain's format.
-    pp_pass.Create(device, FrameGenerator::ColorFormat);
+    pp_pass.Create(device, FrameGenerator::ColorFormat, instance.IsDynamicRenderingSupported());
     // bbport: the overlay draws over every presented image, generated ones included: its
     // vertex buffers must not be reused while one of them is still drawn.
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format,
@@ -729,8 +730,50 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
         .pImageMemoryBarriers = &pre_barrier,
     });
 
-    cmdbuf.beginRendering(rendering_info);
-    cmdbuf.endRendering();
+    if (instance.IsDynamicRenderingSupported()) {
+        cmdbuf.beginRendering(rendering_info);
+        cmdbuf.endRendering();
+    } else {
+        ExecutionRenderPassKey rp_key{};
+        rp_key.compat.num_color_attachments = 1;
+        rp_key.compat.color_formats[0] = FrameGenerator::ColorFormat;
+        rp_key.compat.depth_format = vk::Format::eUndefined;
+        rp_key.compat.stencil_format = vk::Format::eUndefined;
+        rp_key.compat.samples = vk::SampleCountFlagBits::e1;
+        rp_key.color_load_ops[0] = vk::AttachmentLoadOp::eClear;
+        rp_key.color_store_ops[0] = vk::AttachmentStoreOp::eStore;
+        rp_key.depth_load_op = vk::AttachmentLoadOp::eDontCare;
+        rp_key.depth_store_op = vk::AttachmentStoreOp::eDontCare;
+        rp_key.stencil_load_op = vk::AttachmentLoadOp::eDontCare;
+        rp_key.stencil_store_op = vk::AttachmentStoreOp::eDontCare;
+        rp_key.color_layouts[0] = vk::ImageLayout::eColorAttachmentOptimal;
+        const vk::RenderPass render_pass =
+            instance.GetRenderPassCache().GetOrCreateExecutionRenderPass(rp_key);
+
+        FramebufferKey fb_key{};
+        fb_key.render_pass = render_pass;
+        fb_key.num_attachments = 1;
+        fb_key.attachments[0] = frame->image_view;
+        fb_key.width = frame->width;
+        fb_key.height = frame->height;
+        fb_key.layers = 1;
+        const vk::Framebuffer framebuffer =
+            instance.GetFramebufferCache().GetOrCreateFramebuffer(fb_key);
+
+        const vk::ClearValue clear_val{vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}}};
+        const vk::RenderPassBeginInfo rp_begin = {
+            .renderPass = render_pass,
+            .framebuffer = framebuffer,
+            .renderArea = {
+                .offset = {0, 0},
+                .extent = {frame->width, frame->height},
+            },
+            .clearValueCount = 1,
+            .pClearValues = &clear_val,
+        };
+        cmdbuf.beginRenderPass(rp_begin, vk::SubpassContents::eInline);
+        cmdbuf.endRenderPass();
+    }
 
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .imageMemoryBarrierCount = 1,

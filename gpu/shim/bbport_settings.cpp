@@ -184,13 +184,20 @@ void Load() {
     v.startup_live_resolution = v.live_resolution;
 }
 
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411) {
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool fp16) {
     auto& v = Get();
     v.fsr4_supported = fsr4;
     v.fsr411_supported = fsr4 && fsr411;
     const int requested = v.upscaler;
-    if ((requested == UpscalerFsr4 && !v.fsr4_supported) ||
-        (requested == UpscalerFsr411 && !v.fsr411_supported)) {
+    if (!fp16) {
+        if (requested == UpscalerFsr4 || requested == UpscalerFsr411 || requested == UpscalerFsr3) {
+            v.fsr4_problem = "GPU lacks 16-bit floating point (FP16); temporal upscalers disabled";
+            std::printf("Upscaler: %s unsupported on this GPU (no FP16); falling back to Off\n",
+                        UpscalerName(requested));
+            v.upscaler = UpscalerOff;
+        }
+    } else if ((requested == UpscalerFsr4 && !v.fsr4_supported) ||
+               (requested == UpscalerFsr411 && !v.fsr411_supported)) {
         v.fsr4_problem = "GPU does not support the selected FSR 4 shaders; using FSR 3.1";
         std::printf("Upscaler: %s unsupported on this GPU; falling back to FSR 3.1 before the first frame\n",
                     UpscalerName(requested));

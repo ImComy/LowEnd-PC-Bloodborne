@@ -24,11 +24,6 @@ static std::atomic<bool> g_menu_pointer{false}; // below: a menu shows the point
 static std::atomic<bool> g_window_focused{false};
 static std::atomic<int> g_window_points_w{0}, g_window_points_h{0};
 static bool g_pad_in_use = false; // window thread: the last input came from a controller
-static std::atomic<SDL_DisplayID> g_game_display{0}; // ChooseDisplay's answer, 0 before the window
-
-// The monitor the game's window opened on (BB_DISPLAY), 0 before it opened: bbgpu.cpp's display
-// refresh rate is that monitor's, not the primary one's.
-SDL_DisplayID BbGameDisplay() { return g_game_display.load(); }
 
 namespace Frontend {
 
@@ -132,7 +127,6 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
     const SDL_DisplayID display = ChooseDisplay();
-    g_game_display = display;
     s32 window_w = width_, window_h = height_;
     WindowedSize(display, window_w, window_h);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));

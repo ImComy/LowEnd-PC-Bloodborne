@@ -425,6 +425,9 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
             ctx.AddExecutionMode(main, spv::ExecutionMode::OriginUpperLeft);
         }
         if (info.has_discard) {
+            if (ctx.profile.supported_spirv < 0x00010600) {
+                ctx.AddExtension("SPV_EXT_demote_to_helper_invocation");
+            }
             ctx.AddCapability(spv::Capability::DemoteToHelperInvocation);
         }
         if (info.stores.GetAny(IR::Attribute::Depth)) {

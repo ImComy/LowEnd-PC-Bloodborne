@@ -111,6 +111,9 @@ struct PageManager::Impl {
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
+        if (!rasterizer) {
+            return false;
+        }
         const auto addr = reinterpret_cast<VAddr>(fault_address);
         // bbport: the draw recording thread handles its faults inline too (vk_draw_pipe.h).
         const auto is_gpu_thread = rasterizer->IsGpuSideThread();

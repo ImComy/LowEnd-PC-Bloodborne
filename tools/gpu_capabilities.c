@@ -22,8 +22,8 @@ static int better_device(VkPhysicalDevice candidate, VkPhysicalDevice current) {
     VkPhysicalDeviceProperties next, old;
     vkGetPhysicalDeviceProperties(candidate, &next);
     vkGetPhysicalDeviceProperties(current, &old);
-    const int next_api = next.apiVersion >= VK_API_VERSION_1_3;
-    const int old_api = old.apiVersion >= VK_API_VERSION_1_3;
+    const int next_api = next.apiVersion >= VK_API_VERSION_1_2;
+    const int old_api = old.apiVersion >= VK_API_VERSION_1_2;
     if (next_api != old_api) return next_api;
     const int next_discrete = next.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     const int old_discrete = old.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
     const VkApplicationInfo app = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "bbport scene scaling probe",
-        .apiVersion = VK_API_VERSION_1_3,
+        .apiVersion = VK_API_VERSION_1_2,
     };
     const VkInstanceCreateInfo create = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
