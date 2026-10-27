@@ -492,17 +492,25 @@ class LauncherBackend(QObject):
                          f'{label} preset chosen. It applies the next time the game starts.')
 
     def _detect_gpu(self):
+        appdata_bin = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / 'Bloodborne' / 'bin'
         exe = core.PORT_DIR / 'bin' / 'bb-gpu-capabilities.exe'
+        if not exe.is_file():
+            exe = appdata_bin / 'bb-gpu-capabilities.exe'
         if not exe.is_file():
             exe = core.PORT_DIR / 'out' / 'bb-gpu-capabilities.exe'
         if not exe.is_file():
             self.gpuDetected.emit('Graphics card check unavailable')
             return
         env = dict(os.environ)
-        clang = next((p / 'msys64' / 'clang64' / 'bin' for p in core.PORT_DIR.parents
-                      if (p / 'msys64' / 'clang64' / 'bin').is_dir()), None)
-        if clang:
-            env['PATH'] = str(clang) + os.pathsep + env.get('PATH', '')
+        if (exe.parent / 'SDL3.dll').is_file():
+            env['PATH'] = f'{exe.parent}{os.pathsep}{env.get("PATH", "")}'
+        elif (appdata_bin / 'SDL3.dll').is_file():
+            env['PATH'] = f'{appdata_bin}{os.pathsep}{env.get("PATH", "")}'
+        else:
+            clang = next((p / 'msys64' / 'clang64' / 'bin' for p in core.PORT_DIR.parents
+                          if (p / 'msys64' / 'clang64' / 'bin').is_dir()), None)
+            if clang:
+                env['PATH'] = str(clang) + os.pathsep + env.get('PATH', '')
         try:
             result = subprocess.run([str(exe), '--live-resolution'], capture_output=True, text=True,
                                     timeout=30, env=env, creationflags=core.NO_WINDOW)
@@ -879,7 +887,9 @@ class LauncherBackend(QObject):
     @Slot(str)
     def _receive_line(self, line):
         self._append_log(line)
-        if 'Entering original x86-64 code' in line:
+        if ('Entering original x86-64 code' in line or
+            'Display: host buffer' in line or
+            'UserService initialized' in line):
             if not self._game_started:
                 self._game_started = True
                 self.gameStarted.emit()

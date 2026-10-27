@@ -44,8 +44,8 @@ PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This fork's build; the release tag includes this version.
-VERSION = '2.2'
-CURRENT_RELEASE_TAG = 'qml-launcher-preview-24'
+VERSION = '2.1'
+CURRENT_RELEASE_TAG = 'qml-launcher-preview-23'
 HERO_ART = PORT_DIR / 'launcher' / 'art' / 'hero.png'
 STRIP_ART = PORT_DIR / 'launcher' / 'art' / 'strip.png'
 # Co-op: the community server that answers the game's own server requests.
@@ -245,7 +245,15 @@ INI_DEFAULTS = {'upscaler': 'dlss', 'preset': '2', 'sharpen': '1', 'sharpness': 
                 'mouse_invert_y': '0', 'mouse_hide_cursor': '0', 'move_smoothing': '60', 'frame_gen': 'off', 'frame_gen_multiplier': '2', 'frame_gen_fit_display': '0',
                 'atlas_npc_mode': 'all',
                 **{key: '1' if on else '0' for key, _t, on in EFFECTS + EXTRAS + CHEATS + TWEAKS + ENHANCEMENTS + ATLAS}}
-APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'), 'user_dir': '', 'dlc_dir': '',
+def find_default_game_dir():
+    for candidate in (PORT_DIR.parent / 'game', PORT_DIR.parent.parent / 'game',
+                      Path('I:/Games/Bloodborne/game'), PORT_DIR.parent / 'CUSA03173'):
+        if (candidate / 'eboot.bin').is_file():
+            return str(candidate)
+    return str(PORT_DIR.parent / 'CUSA03173')
+
+
+APP_DEFAULTS = {'ui_language': '', 'game_dir': find_default_game_dir(), 'user_dir': '', 'dlc_dir': '',
                 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
                 'voice_language': 'auto',
                 'player_name': '', 'fullscreen': False, 'fullscreen_mode': 'borderless', 'display': '',
@@ -271,9 +279,14 @@ def app_settings(saved):
     """The launcher settings: APP_DEFAULTS under the saved ones. Settings saved before 120 FPS was
     the default and without a frame rate of their own ran unlocked: they keep that."""
     settings = {**APP_DEFAULTS, **saved}
+    if not (Path(settings.get('game_dir', '')) / 'eboot.bin').is_file():
+        default_dir = find_default_game_dir()
+        if (Path(default_dir) / 'eboot.bin').is_file():
+            settings['game_dir'] = default_dir
     if saved and 'fps_mode' not in saved:
         settings['fps_mode'] = 'uncap'
     return settings
+
 
 
 UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
@@ -2023,13 +2036,19 @@ class Launcher:
         output = self.var('output_res', 'ini').get().replace('x', ' × ')
         online = _('Online') if self.var('online', 'app').get() else _('Offline')
         return f'{_(*fps)}   ·   {upscaler}   ·   {output}   ·   {online}'
-
     def detect_gpu(self):
+        appdata_bin = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / 'Bloodborne' / 'bin'
         exe = PORT_DIR / 'bin' / 'bb-gpu-capabilities.exe'
+        if not exe.is_file():
+            exe = appdata_bin / 'bb-gpu-capabilities.exe'
         if not exe.is_file():
             exe = PORT_DIR / 'out' / 'bb-gpu-capabilities.exe'
         env = dict(os.environ)
-        if not (exe.parent / 'SDL3.dll').is_file():
+        if (exe.parent / 'SDL3.dll').is_file():
+            env['PATH'] = f'{exe.parent}{os.pathsep}{env.get("PATH", "")}'
+        elif (appdata_bin / 'SDL3.dll').is_file():
+            env['PATH'] = f'{appdata_bin}{os.pathsep}{env.get("PATH", "")}'
+        elif not (exe.parent / 'SDL3.dll').is_file():
             clang64 = Path(os.environ.get('MSYS2_ROOT', r'C:\msys64')) / 'clang64' / 'bin'
             env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
         text = _('• Graphics card: not checked', '• Видеокарта: не проверена')

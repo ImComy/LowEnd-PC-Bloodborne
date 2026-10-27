@@ -12,11 +12,10 @@ from bbport_launcher_backend import LauncherBackend
 import bbport_launcher_win as launcher_core
 import bbport_startup
 
-# How long the "Launching Bloodborne" toast stays up if the game does not report running sooner.
-SPLASH_MS = 8000
-# A direct launch waits this long first, so Shift or a click on the toast can still open the
-# launcher instead (issue #11: the game started too soon to notice the hint).
-GRACE_S = 3
+# Splash stays visible as a loading indicator until the game starts (fallback safety timeout 60s).
+SPLASH_MS = 60000
+# A direct launch waits this long first, so Shift or a click on the toast can open the launcher.
+GRACE_S = 2
 
 
 def run_ui(route=None):

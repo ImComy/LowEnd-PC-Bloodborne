@@ -17,6 +17,12 @@ import subprocess
 import sys
 
 PORT = Path(__file__).resolve().parent
+SCRIPTS = PORT / 'scripts'
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+LAUNCHER = PORT / 'launcher'
+if str(LAUNCHER) not in sys.path:
+    sys.path.insert(0, str(LAUNCHER))
 # The keyboard key images (PCBButtons from Nexus Mods), as the launcher adds them to the mods
 # folder (launcher KEYBOARD_PROMPTS).
 KEYBOARD_PROMPTS = 'Keyboard Prompts (PCBButtons)'
@@ -169,20 +175,10 @@ def ini_value(path, key):
     return None
 
 
-def startup_output_res(env, config):
-    """The output size of this start: BB_OUTPUT_RES, else bbport.ini's. Sizes this script chose
-    for the previous start (BB_AUTO_RENDER_RES) are dropped first: after an in-game restart that
-    changed the output, the HUD layout was made for the old one's aspect ratio (a 3440x1440 game
-    with a 16:9 HUD layout, GitHub issue #141), and the scene size recomputed below."""
-    if env.get('BB_AUTO_RENDER_RES') == '1':
-        for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
-            env.pop(key, None)
-    return env.get('BB_OUTPUT_RES') or ini_value(config, 'output_res') or ''
-
-
 def find_executable(name):
-    """bin/ (packaged), else out/ (built with build.sh)."""
-    for candidate in (PORT / 'bin' / name, PORT / 'out' / name):
+    """bin/ (packaged), %LOCALAPPDATA%/Bloodborne/bin (global), else out/ (built with build.sh)."""
+    appdata_bin = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / 'Bloodborne' / 'bin'
+    for candidate in (PORT / 'bin' / name, appdata_bin / name, PORT / 'out' / name):
         if candidate.is_file():
             return candidate
     return None
@@ -315,23 +311,50 @@ def main():
     probe = Path(env['BB_PROBE']) if env.get('BB_PROBE') else find_executable('bb-probe.exe')
     if not probe or not probe.is_file():
         fail('bb-probe.exe not found: build it with build.sh (MSYS2 CLANG64) or use a packaged build.')
-    # Development builds run from the MSYS2 tree: its CLANG64 DLLs (SDL3, FFmpeg, ...).
-    if not (probe.parent / 'SDL3.dll').is_file():
+    # Runtime DLLs (SDL3, FFmpeg, Vulkan loader, ...) from bin, AppData or MSYS2 CLANG64.
+    appdata_bin = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / 'Bloodborne' / 'bin'
+    if (probe.parent / 'SDL3.dll').is_file():
+        env['PATH'] = f'{probe.parent}{os.pathsep}{env.get("PATH", "")}'
+    elif (appdata_bin / 'SDL3.dll').is_file():
+        env['PATH'] = f'{appdata_bin}{os.pathsep}{env.get("PATH", "")}'
+    elif not (probe.parent / 'SDL3.dll').is_file():
         clang64 = Path(env.get('MSYS2_ROOT', r'C:\msys64')) / 'clang64' / 'bin'
         if clang64.is_dir():
             env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
 
-    game = Path(env.get('BB_GAME_DIR', PORT.parent / 'CUSA03173'))
+    game_candidates = [
+        env.get('BB_GAME_DIR'),
+        PORT.parent / 'game',
+        PORT.parent.parent / 'game',
+        Path('I:/Games/Bloodborne/game'),
+        PORT.parent / 'CUSA03173',
+    ]
+    game = None
+    for candidate in game_candidates:
+        if candidate and (Path(candidate) / 'eboot.bin').is_file():
+            game = Path(candidate)
+            break
+    if not game:
+        game = Path(env.get('BB_GAME_DIR', PORT.parent / 'CUSA03173'))
     if not (game / 'eboot.bin').is_file():
         fail(f'No eboot.bin in {game} (set BB_GAME_DIR).')
     original_game = game.resolve()
     # A broken extraction (stale compressed sectors): the game would hang loading its shaders,
     # with no error. (parsifal295, Supermedo PR #64; bbport 0.5-pre4.) BB_SKIP_GAME_CHECK=1 skips it.
     if env.get('BB_SKIP_GAME_CHECK') != '1':
-        sys.path.insert(0, str(PORT / 'scripts'))
-        import game_check
-        if broken := game_check.broken_files(game):
-            fail(game_check.explain(broken))
+        check_stamp = out / '.game_check_passed'
+        eboot_file = game / 'eboot.bin'
+        stamp = f"{eboot_file.stat().st_size}_{int(eboot_file.stat().st_mtime)}" if eboot_file.is_file() else ""
+        if not (check_stamp.is_file() and check_stamp.read_text(encoding='utf-8', errors='ignore').strip() == stamp):
+            sys.path.insert(0, str(PORT / 'scripts'))
+            import game_check
+            if broken := game_check.broken_files(game):
+                fail(game_check.explain(broken))
+            if stamp:
+                try:
+                    check_stamp.write_text(stamp, encoding='utf-8')
+                except OSError:
+                    pass
     # PC enhancements (bbport.ini pc_*, BB_PC_*): files made from the game, under the mods.
     # Optional: should they fail, the game starts as without them.
     generated = (run_script('enhancements.py', '--game', game, '--out', Path(out) / 'enhancements',
@@ -366,7 +389,7 @@ def main():
     from patches import OUTPUT_SIZE, eboot_is_109, game_app_version, hud_canvas, output_size
     hud_layer = Path(out) / 'hud_layout'
     shutil.rmtree(hud_layer, ignore_errors=True)
-    output_res = startup_output_res(env, config)
+    output_res = env.get('BB_OUTPUT_RES') or ini_value(config, 'output_res') or ''
     canvas = hud_canvas(output_size({'output_res': output_res}))
     # Only for the clean 1.09 eboot.bin: patches.py leaves a modified one unpatched (16:9), and
     # widened menus on a 16:9 game came out stretched (Supermedo PR #90, emurphy04).
@@ -411,13 +434,32 @@ def main():
     env['BB_BUTTON_PROMPTS'] = 'Keyboard' if keyboard else ''
     env['BB_KEY_PROMPT_IMAGES'] = '1' if keyboard else '0'
     try:
-        run_script('prepare.py', game, '--out', out)
+        eboot_file = game / 'eboot.bin'
+        eboot_stamp = f"{eboot_file.stat().st_size}_{int(eboot_file.stat().st_mtime)}" if eboot_file.is_file() else ""
+        cached_stamp_file = out / '.eboot_prepared_stamp'
+        already_prepared = (
+            eboot_stamp and
+            cached_stamp_file.is_file() and
+            cached_stamp_file.read_text(encoding='utf-8', errors='ignore').strip() == eboot_stamp and
+            (out / 'boot-linked.bin').is_file() and
+            (out / 'eboot.elf').is_file() and
+            (out / 'link.json').is_file()
+        )
+        if not already_prepared:
+            run_script('prepare.py', game, '--out', out)
+            shader_prebuild(game, out, env)
+            run_script('link_libc.py', game, '--out', out)
+            run_script('link_modules.py', game, '--out', out)
+            if eboot_stamp:
+                try:
+                    cached_stamp_file.write_text(eboot_stamp, encoding='utf-8')
+                except OSError:
+                    pass
+        else:
+            print("Game binaries: using pre-built cached boot image (instant boot)")
         sys.path.insert(0, str(PORT / 'scripts'))
         from aspect_ratio import segment_fingerprint
         env['BB_ASPECT_EBOOT_SEGMENTS'] = segment_fingerprint((out / 'eboot.elf').read_bytes())
-        shader_prebuild(game, out, env)
-        run_script('link_libc.py', game, '--out', out)
-        run_script('link_modules.py', game, '--out', out)
         # Legacy CPU profile (scripts/cpu_compat.py): the image no longer needs BMI1, LZCNT or
         # MOVBE, and bb-probe's CPU check lets such a CPU start.
         try:
@@ -444,6 +486,10 @@ def main():
             patched = False
             print('Game files: eboot.bin is not the 01.09 build the community patches were made for; '
                   '30 FPS, no effect patches')
+        # Sizes chosen below for the previous launch are recomputed after an in-game restart.
+        if env.get('BB_AUTO_RENDER_RES') == '1':
+            for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
+                env.pop(key, None)
         fps = env.get('BB_FPS', 'uncap') if patched else '30'
         scaled_render = scaled_output = None
         if not env.get('BB_RENDER_RES'):
@@ -495,7 +541,8 @@ def main():
                   '(live_resolution=1: live changes)')
         vram = low_vram_mb(env, probe.parent / 'bb-gpu-capabilities.exe')
         if vram:
-            env.setdefault('BB_GC_BUDGET_MB', str(max(2048, vram - VRAM_RESERVE_MB)))
+            reserve = 1500 if vram <= LOW_VRAM_MB else VRAM_RESERVE_MB
+            env.setdefault('BB_GC_BUDGET_MB', str(min(2560, max(2048, vram - reserve))))
             notes = [f'texture budget {env["BB_GC_BUDGET_MB"]} MiB']
             # At 1080p output the live path keeps the game's targets native; here they shrink too.
             wants_live = (env.get('BB_LIVE_RES') or ini_value(config, 'live_resolution')) == '1'
