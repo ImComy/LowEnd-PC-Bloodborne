@@ -275,7 +275,7 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
         fb = instance.GetFramebufferCache().GetOrCreateFramebuffer(fb_key);
     }
 
-    scheduler.Record([=, use_dynamic = instance.IsDynamicRenderingSupported()](vk::CommandBuffer cmd) {
+    scheduler.Record([=, this, use_dynamic = instance.IsDynamicRenderingSupported()](vk::CommandBuffer cmd) {
         const vk::RenderingAttachmentInfo attachment{
             .imageView = target_view,
             .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
@@ -318,9 +318,10 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
                                    .descriptorType = vk::DescriptorType::eSampledImage,
                                    .pImageInfo = &infos[1]},
         };
-        cmd.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, layout, 0,
-                                 vk::ArrayProxy<const vk::WriteDescriptorSet>(
-                                     stencil ? 2u : 1u, writes.data()));
+        scheduler.PushDescriptorSet(
+            cmd, vk::PipelineBindPoint::eGraphics, layout, 0,
+            std::span<const vk::WriteDescriptorSet>(writes.data(), stencil ? 2u : 1u),
+            *resample_set_layout);
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
         if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetViewportWithCount) {
             cmd.setViewportWithCount(vk::Viewport{0.f, 0.f, float(dst_size.width),
@@ -373,8 +374,12 @@ void SceneTargets::CreateResampleResources() {
         vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eSampledImage, 1,
                                        vk::ShaderStageFlagBits::eFragment},
     };
+    const vk::DescriptorSetLayoutCreateFlags resample_flags =
+        instance.IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     resample_set_layout = Check(device.createDescriptorSetLayoutUnique({
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = resample_flags,
         .bindingCount = u32(bindings.size()), .pBindings = bindings.data(),
     }));
     const auto set_layout = *resample_set_layout;

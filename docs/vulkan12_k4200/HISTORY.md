@@ -269,6 +269,53 @@ The user's initial edits were headed in the right direction for feature struct u
   - Save data directory mounted and loaded: `SPRJ0005`.
   - Zero crashes, zero access violations, zero device loss.
 
+---
+
+## 2026-11-15: Universal Vulkan 1.2 & AMD Legacy GPU (GCN 1.0 / M6100) Compatibility
+
+### Reported Issues & Diagnostics
+1. **Critical Vulkan 1.3 Assertion Failure on AMD FirePro M6100**:
+   - *Report*: `GPU [Debug] <Critical> vk_instance.cpp:194 Instance: Assertion Failed! Vulkan 1.3 is required, but only 1.2 is supported by device! STOP: GPU library assertion failed (code 23)`.
+   - *Hardware*: AMD FirePro M6100 (2GB VRAM, GCN 1.0, driver 2.0.179, Vulkan 1.2.170, CPU i7-4900MQ, 16GB RAM).
+   - *Cause*: Outdated prebuilt binaries (`Bloodborne.exe`, `out/bb-probe.exe`, `out/bb-gpu-capabilities.exe`, `out/bb-play.exe`) built prior to commit `f812ac2` were still distributed in the root and `out/` folders.
+   - *Fix*: Recompiled all engine binaries (`bb-probe.exe`, `bb-gpu-capabilities.exe`, `bb-play.exe`) and entry launchers (`Bloodborne.exe`, `Bloodborne Launcher.exe`, `Play Bloodborne.exe`, `Setup Bloodborne.exe`) with the complete Vulkan 1.2 codebase.
+
+2. **Missing `VK_KHR_push_descriptor` Extension Crash**:
+   - *Report*: `GPU [Render.Vulkan] <Warning> vk_instance.cpp:308 operator(): Extension VK_KHR_push_descriptor unavailable`.
+   - *Cause*: AMD GCN 1.0 hardware on driver 2.0.179 does not support `VK_KHR_push_descriptor`. While guest pipelines in `vk_pipeline_common.cpp` had an alternative path, `vk_instance.cpp` mandated the extension, unconditionally linked push descriptor property structures, and 11 host passes hardcoded `ePushDescriptorKHR` in descriptor set layouts and called `cmdbuf.pushDescriptorSetKHR()`.
+   - *Fix*:
+     - Made `VK_KHR_push_descriptor` an optional extension in `vk_instance.cpp`.
+     - Dynamically unlinked `VkPhysicalDevicePushDescriptorPropertiesKHR` and `VkPhysicalDeviceVulkan13Properties` if unsupported; added `IsPushDescriptorSupported()` and returned 0 in `MaxPushDescriptors()`.
+     - Made `DescriptorHeap::Commit` thread-safe by adding `std::mutex mutex` and `std::lock_guard`.
+     - Added `Scheduler::PushDescriptorSet(...)` in `vk_scheduler.cpp` with automatic fallback: allocates descriptor sets from `fallback_desc_heap`, updates descriptors via `device.updateDescriptorSets()`, and binds via `cmdbuf.bindDescriptorSets()`.
+     - Updated all host passes (`blit_helper.cpp`, `pp_pass.cpp`, `vk_scene_resolution.cpp`, `tile_manager.cpp`, `fault_manager.cpp`, `vk_camera_motion.cpp`, `vk_frame_generation.cpp`, `vk_indirect_guard.cpp`, `vk_shader_hle.cpp`, `vk_temporal_upscaler.cpp`) to condition descriptor set layout flags with `instance.IsPushDescriptorSupported() ? ePushDescriptorKHR : flags{}` and route through `Scheduler::PushDescriptorSet()`.
+     - Guarded FSR 4.1.1 and INT8 upscalers from activating when push descriptors are unsupported.
+
+3. **Launcher Buffering Cursor & Silent Failure**:
+   - *Report*: Launcher doesn't open on clean Windows installations ("mouse keeps on buffering and that's it").
+   - *Cause*:
+     - Native C launchers (`bloodborne_entry.c`, `launcher.c`, `play.c`, `setup.c`) fell back to `pythonw.exe` on `PATH`. On Windows 10/11, `%LOCALAPPDATA%\Microsoft\WindowsApps` contains 0-byte execution alias stubs. Running `pythonw.exe` windowless launched this stub, which exited immediately with no console or error message, showing only a 2-second spinning cursor.
+     - Python installations in standard `Program Files`, `C:\Python3*`, and Windows Registry (`HKCU/HKLM\Software\Python\PythonCore\*\InstallPath`) were not checked.
+     - `launcher/bbport_launcher_win.py` lacked top-level exception catching, silently exiting if PySide6 or Tkinter threw an error under `pythonw.exe`.
+   - *Fix*:
+     - Implemented robust `find_python` in all four C launchers: validates file existence and size (> 50KB to reject 0-byte stubs), explicitly excludes `\WindowsApps\`, checks AppData, `Program Files`, `Program Files (x86)`, `C:\Python3*`, Windows Registry, and `SearchPathW`.
+     - Added user-friendly `MessageBoxW` dialogs when Python is missing directing the user to install Python 3.10+ or run `Setup Bloodborne.exe`.
+     - Updated `Setup Bloodborne.exe` to check and automatically `pip install` both `PySide6` and `Pillow` (PIL).
+     - Added top-level `try ... except Exception` in `launcher/bbport_launcher_win.py` writing to `%APPDATA%\bbport-launcher\launcher-startup.log` / `launcher-fatal.log` and displaying a `MessageBoxW`.
+     - Added `sys.path.insert(0, str(PORT_DIR / 'launcher'))` to ensure imports always resolve.
+
+### Verification Results
+1. **Engine Build**: Compiled with MSYS2 CLANG64 (`bash build.sh`) generating `out/bb-probe.exe`, `out/bb-gpu-capabilities.exe`, and `out/bb-play.exe`.
+2. **Launchers Build**: Recompiled `Bloodborne.exe`, `Bloodborne Launcher.exe`, `Play Bloodborne.exe`, and `Setup Bloodborne.exe` with `-O2 -mwindows -municode`.
+3. **Backend Smoke Test**: `out/bb-probe.exe --vulkan-only` returned PASS on Vulkan 1.2 hardware.
+4. **Unit Tests**:
+   - `test_vulkan12_renderpass.exe`: PASS.
+   - `test_vulkan12_pipeline.exe`: PASS (including new push descriptor layout flag conditioning validation).
+   - `test_vulkan12_overlay.exe`: PASS.
+   - `test_vulkan12_vram.exe`: PASS.
+5. **Launcher Verification**: Executed launcher startup without errors.
+
+
 
 
 

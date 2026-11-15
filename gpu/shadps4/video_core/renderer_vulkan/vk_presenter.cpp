@@ -162,7 +162,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     // bbport: frames are composed in RGBA8 (what frame generation reads and writes) and
     // blitted into the swapchain's format.
-    pp_pass.Create(device, FrameGenerator::ColorFormat, instance.IsDynamicRenderingSupported());
+    pp_pass.Create(instance, draw_scheduler, FrameGenerator::ColorFormat,
+                   instance.IsDynamicRenderingSupported());
     // bbport: the overlay draws over every presented image, generated ones included: its
     // vertex buffers must not be reused while one of them is still drawn.
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format,

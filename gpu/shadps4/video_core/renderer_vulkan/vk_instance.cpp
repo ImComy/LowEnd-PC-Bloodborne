@@ -258,7 +258,11 @@ void Instance::DeviceLost(const char* where) const {
 }
 
 bool Instance::CreateDevice() {
-    const vk::StructureChain feature_chain = physical_device.getFeatures2<
+    const auto has_ext = [&](std::string_view name) {
+        return std::ranges::find(available_extensions, name) != available_extensions.end();
+    };
+
+    vk::StructureChain<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
         vk::PhysicalDeviceRobustness2FeaturesEXT,
@@ -274,18 +278,99 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT,
         vk::PhysicalDeviceSubgroupSizeControlFeaturesEXT,
         vk::PhysicalDeviceDynamicRenderingFeaturesKHR,
-        vk::PhysicalDeviceFaultFeaturesEXT>();
+        vk::PhysicalDeviceFaultFeaturesEXT> feature_chain;
+
+    if (properties.apiVersion < VK_API_VERSION_1_3) {
+        feature_chain.unlink<vk::PhysicalDeviceVulkan13Features>();
+    }
+    if (!has_ext(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceRobustness2FeaturesEXT>();
+    }
+    if (!has_ext(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+    }
+    if (!has_ext(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();
+    }
+    if (!has_ext(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT>();
+    }
+    if (!has_ext(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT>();
+    }
+    if (!has_ext(VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR>();
+    }
+    if (!has_ext(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT>();
+    }
+    if (!has_ext(VK_KHR_SHADER_CLOCK_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceShaderClockFeaturesKHR>();
+    }
+    if (!has_ext(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
+    }
+    if (!has_ext(VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
+    }
+    if (properties.apiVersion < VK_API_VERSION_1_3 && !has_ext(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceSynchronization2FeaturesKHR>();
+    }
+    if (properties.apiVersion < VK_API_VERSION_1_3 && !has_ext(VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT>();
+    }
+    if (properties.apiVersion < VK_API_VERSION_1_3 && !has_ext(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceSubgroupSizeControlFeaturesEXT>();
+    }
+    if (properties.apiVersion < VK_API_VERSION_1_3 && !has_ext(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceDynamicRenderingFeaturesKHR>();
+    }
+    if (!has_ext(VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+        feature_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
+    }
+
+    physical_device.getFeatures2(&feature_chain.get<vk::PhysicalDeviceFeatures2>());
     features = feature_chain.get().features;
 
-    const vk::StructureChain properties_chain = physical_device.getProperties2<
+    vk::StructureChain<
         vk::PhysicalDeviceProperties2, vk::PhysicalDeviceVulkan11Properties,
         vk::PhysicalDeviceVulkan12Properties, vk::PhysicalDeviceVulkan13Properties,
         vk::PhysicalDevicePushDescriptorPropertiesKHR,
-        vk::PhysicalDeviceSubgroupSizeControlPropertiesEXT>();
+        vk::PhysicalDeviceSubgroupSizeControlPropertiesEXT> properties_chain;
+
+    if (properties.apiVersion < VK_API_VERSION_1_3) {
+        properties_chain.unlink<vk::PhysicalDeviceVulkan13Properties>();
+    }
+    const bool has_push_descriptor_ext =
+        std::ranges::find(available_extensions, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME) !=
+        available_extensions.end();
+    if (!has_push_descriptor_ext) {
+        properties_chain.unlink<vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+    }
+    const bool has_subgroup_control_ext =
+        std::ranges::find(available_extensions, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) !=
+        available_extensions.end();
+    if (properties.apiVersion < VK_API_VERSION_1_3 && !has_subgroup_control_ext) {
+        properties_chain.unlink<vk::PhysicalDeviceSubgroupSizeControlPropertiesEXT>();
+    }
+
+    physical_device.getProperties2(&properties_chain.get<vk::PhysicalDeviceProperties2>());
+
     vk11_props = properties_chain.get<vk::PhysicalDeviceVulkan11Properties>();
     vk12_props = properties_chain.get<vk::PhysicalDeviceVulkan12Properties>();
-    vk13_props = properties_chain.get<vk::PhysicalDeviceVulkan13Properties>();
-    push_descriptor_props = properties_chain.get<vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+    if (properties.apiVersion >= VK_API_VERSION_1_3) {
+        vk13_props = properties_chain.get<vk::PhysicalDeviceVulkan13Properties>();
+    }
+    if (has_push_descriptor_ext) {
+        push_descriptor_props =
+            properties_chain.get<vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+    } else {
+        push_descriptor_props = {};
+    }
+    if (properties.apiVersion >= VK_API_VERSION_1_3 || has_subgroup_control_ext) {
+        subgroup_size_control_props =
+            properties_chain.get<vk::PhysicalDeviceSubgroupSizeControlPropertiesEXT>();
+    }
     LOG_INFO(Render_Vulkan, "Physical device subgroup size {}", vk11_props.subgroupSize);
 
     if (available_extensions.empty()) {
@@ -312,8 +397,6 @@ bool Instance::CreateDevice() {
     // Required
     ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    ASSERT_MSG(add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}", VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     ASSERT_MSG(add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}",
                VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
@@ -329,6 +412,7 @@ bool Instance::CreateDevice() {
                "Required Vulkan feature unavailable: nullDescriptor");
 
     // Optional
+    push_descriptor = has_push_descriptor_ext && add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     maintenance_8 = add_extension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
     attachment_feedback_loop = add_extension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);

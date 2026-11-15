@@ -39,8 +39,12 @@ FaultManager::FaultManager(const Vulkan::Instance& instance, Vulkan::Scheduler& 
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         },
     }};
+    const vk::DescriptorSetLayoutCreateFlags flags =
+        instance.IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci = {
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = flags,
         .bindingCount = 2,
         .pBindings = bindings.data(),
     };
@@ -148,8 +152,9 @@ void FaultManager::ProcessFaultBuffer() {
         .pBufferMemoryBarriers = &pre_barrier,
     });
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *fault_process_pipeline);
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *fault_process_pipeline_layout, 0,
-                                writes);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute,
+                                *fault_process_pipeline_layout, 0, writes,
+                                *fault_process_desc_layout);
     // 1 bit per page, 32 pages per workgroup
     const u32 num_threads = sparse_num_pages / 32;
     const u32 num_workgroups = Common::DivCeil(num_threads, 64u);

@@ -729,6 +729,21 @@ public:
     /// Ends current rendering scope.
     void EndRendering();
 
+    /// Pushes descriptor sets to command buffer, or falls back to allocating from DescriptorHeap and binding.
+    void PushDescriptorSet(vk::CommandBuffer cmdbuf, vk::PipelineBindPoint bind_point,
+                           vk::PipelineLayout layout, u32 set_index,
+                           std::span<const vk::WriteDescriptorSet> writes,
+                           vk::DescriptorSetLayout set_layout = VK_NULL_HANDLE);
+
+    /// Overload for a single vk::WriteDescriptorSet.
+    void PushDescriptorSet(vk::CommandBuffer cmdbuf, vk::PipelineBindPoint bind_point,
+                           vk::PipelineLayout layout, u32 set_index,
+                           const vk::WriteDescriptorSet& write,
+                           vk::DescriptorSetLayout set_layout = VK_NULL_HANDLE) {
+        PushDescriptorSet(cmdbuf, bind_point, layout, set_index,
+                          std::span<const vk::WriteDescriptorSet>{&write, 1}, set_layout);
+    }
+
     /// Sets a function to be called on every scheduler submission.
     void SetSubmitCallback(SubmitFunc&& on_submit) {
         this->on_submit = std::move(on_submit);
@@ -965,6 +980,7 @@ private:
     bool recording_threaded{false};
     std::jthread recorder_thread;
     tracy::VkCtxScope* profiler_scope{};
+    std::unique_ptr<DescriptorHeap> fallback_desc_heap;
 };
 
 } // namespace Vulkan

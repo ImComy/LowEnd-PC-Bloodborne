@@ -73,8 +73,12 @@ CameraMotion::CameraMotion(const Instance& instance_, Scheduler& scheduler_,
              .descriptorCount = 1,
              .stageFlags = vk::ShaderStageFlagBits::eCompute},
         }};
+        const vk::DescriptorSetLayoutCreateFlags motion_flags =
+            instance.IsPushDescriptorSupported()
+                ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+                : vk::DescriptorSetLayoutCreateFlags{};
         motion_desc_layout = Check(device.createDescriptorSetLayoutUnique({
-            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .flags = motion_flags,
             .bindingCount = static_cast<u32>(motion_bindings.size()),
             .pBindings = motion_bindings.data(),
         }));
@@ -118,8 +122,12 @@ CameraMotion::CameraMotion(const Instance& instance_, Scheduler& scheduler_,
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
     }};
+    const vk::DescriptorSetLayoutCreateFlags flags =
+        instance.IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     desc_layout = Check(device.createDescriptorSetLayoutUnique({
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = flags,
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),
     }));
@@ -271,8 +279,8 @@ void CameraMotion::RecordMotion(vk::CommandBuffer cmdbuf, vk::ImageView depth_vi
          .pImageInfo = &object_info},
     }};
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *motion_pipeline);
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *motion_pipeline_layout, 0,
-                                writes);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute,
+                                *motion_pipeline_layout, 0, writes, *motion_desc_layout);
     cmdbuf.pushConstants(*motion_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
                          sizeof(push), &push);
     cmdbuf.dispatch((width + 7) / 8, (height + 7) / 8, 1);
@@ -411,7 +419,8 @@ void CameraMotion::Overlay(VideoCore::ImageId frame) {
     }};
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *overlay_pipeline);
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pipeline_layout, 0, writes);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute, *pipeline_layout, 0,
+                                writes, *desc_layout);
     cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
                          &push);
     // The previous frame buffer was written by the last dispatch.

@@ -60,8 +60,12 @@ TileManager::TileManager(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         },
     }};
 
+    const vk::DescriptorSetLayoutCreateFlags flags =
+        instance.IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci = {
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = flags,
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),
     };
@@ -196,7 +200,8 @@ vk::Pipeline TileManager::GetTilingPipeline(const ImageInfo& info, bool is_tiler
 void TileManager::RecordTilingDispatch(vk::Pipeline pipeline, const vk::DescriptorBufferInfo& tiled,
                                        const vk::DescriptorBufferInfo& linear,
                                        const vk::DescriptorBufferInfo& params, u32 dim_x) {
-    scheduler.Record([pipeline, layout = *pl_layout, tiled, linear, params,
+    scheduler.Record([&scheduler = this->scheduler, desc_layout = *desc_layout,
+                      pipeline, layout = *pl_layout, tiled, linear, params,
                       dim_x](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
         const std::array<vk::WriteDescriptorSet, 3> set_writes = {{
@@ -219,7 +224,8 @@ void TileManager::RecordTilingDispatch(vk::Pipeline pipeline, const vk::Descript
                 .pBufferInfo = &params,
             },
         }};
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, set_writes);
+        scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute, layout, 0,
+                                    set_writes, desc_layout);
         cmdbuf.dispatch(dim_x, 1, 1);
     });
 }

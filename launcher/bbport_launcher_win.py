@@ -35,6 +35,7 @@ import zipfile
 FROZEN = getattr(sys, 'frozen', False)
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PORT_DIR / 'scripts'))
+sys.path.insert(0, str(PORT_DIR / 'launcher'))
 DATA_DIR = Path(os.environ.get('BB_DATA_DIR', PORT_DIR))
 # Co-op test build: its own settings, and no updates (a public release would replace it).
 COOP_TEST = False
@@ -2742,49 +2743,70 @@ def install_update(target, wait_pid):
 
 def main():
     global LANG
-    args = sys.argv[1:]
-    if args and args[0] in ('--run', '--script'):
-        sys.exit(run_role(args))
-    import bbport_startup
-    keys_held = bbport_startup.launcher_keys_held()  # read first: the user may let go soon
-    saved = load_json(CONFIG_FILE, {})
-    settings = app_settings(saved)
-    if bbport_startup.migrate(saved, settings):
-        try:
-            CONFIG_FILE.write_text(json.dumps(saved, indent=2, ensure_ascii=False), encoding='utf-8')
-        except OSError:
-            pass
-        settings = app_settings(saved)
-    LANG = settings.get('ui_language') or windows_language()
-    if args[:1] == ['--install-update'] and len(args) == 3:
-        sys.exit(install_update(args[1], args[2]))
-    if FROZEN and UPDATE_DIR not in PORT_DIR.parents:
-        remove_update_folder()  # what a finished update left behind
-    # Without a usable game folder there is nothing to play yet: open the launcher instead.
-    if '--play' in args and (Path(settings['game_dir'] or '.') / 'eboot.bin').is_file():
-        sys.exit(play_without_window(settings))
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled displays
-    except (AttributeError, OSError):
-        pass
-    if '--classic-launcher' not in args:
+        args = sys.argv[1:]
+        if args and args[0] in ('--run', '--script'):
+            sys.exit(run_role(args))
+        import bbport_startup
+        keys_held = bbport_startup.launcher_keys_held()  # read first: the user may let go soon
+        saved = load_json(CONFIG_FILE, {})
+        settings = app_settings(saved)
+        if bbport_startup.migrate(saved, settings):
+            try:
+                CONFIG_FILE.write_text(json.dumps(saved, indent=2, ensure_ascii=False), encoding='utf-8')
+            except OSError:
+                pass
+            settings = app_settings(saved)
+        LANG = settings.get('ui_language') or windows_language()
+        if args[:1] == ['--install-update'] and len(args) == 3:
+            sys.exit(install_update(args[1], args[2]))
+        if FROZEN and UPDATE_DIR not in PORT_DIR.parents:
+            remove_update_folder()  # what a finished update left behind
+        # Without a usable game folder there is nothing to play yet: open the launcher instead.
+        if '--play' in args and (Path(settings['game_dir'] or '.') / 'eboot.bin').is_file():
+            sys.exit(play_without_window(settings))
         try:
-            from bbport_launcher_qml import run_ui
-        except ImportError as error:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled displays
+        except (AttributeError, OSError):
+            pass
+        if '--classic-launcher' not in args:
+            try:
+                from bbport_launcher_qml import run_ui
+                sys.exit(run_ui(bbport_startup.route(settings, args, DATA_DIR, keys_held)))
+            except Exception as error:
+                import traceback
+                try:
+                    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                    (CONFIG_DIR / 'launcher-startup.log').write_text(traceback.format_exc(), encoding='utf-8')
+                except OSError:
+                    pass
+                print(f'Qt Quick unavailable; opening classic launcher: {error}', file=sys.stderr)
+        try:
+            import tkinter as tk
+            from tkinter import filedialog, messagebox, ttk
+            root = tk.Tk()
+            Launcher(root, tk, ttk, filedialog, messagebox)
+            root.mainloop()
+        except Exception as error:
             import traceback
             try:
                 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-                (CONFIG_DIR / 'launcher-startup.log').write_text(traceback.format_exc(), encoding='utf-8')
+                (CONFIG_DIR / 'launcher-classic-crash.log').write_text(traceback.format_exc(), encoding='utf-8')
             except OSError:
                 pass
-            print(f'Qt Quick unavailable; opening classic launcher: {error}', file=sys.stderr)
-        else:
-            sys.exit(run_ui(bbport_startup.route(settings, args, DATA_DIR, keys_held)))
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
-    root = tk.Tk()
-    Launcher(root, tk, ttk, filedialog, messagebox)
-    root.mainloop()
+            msg = f"Bloodborne Launcher failed to open:\n\n{error}\n\nCheck {CONFIG_DIR / 'launcher-startup.log'} or {CONFIG_DIR / 'launcher-classic-crash.log'} for details."
+            ctypes.windll.user32.MessageBoxW(None, msg, "Bloodborne Launcher", 0x10)
+            sys.exit(1)
+    except Exception as fatal_error:
+        import traceback
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            (CONFIG_DIR / 'launcher-fatal.log').write_text(traceback.format_exc(), encoding='utf-8')
+        except OSError:
+            pass
+        msg = f"Bloodborne Launcher encountered an error:\n\n{fatal_error}\n\nLog saved to {CONFIG_DIR / 'launcher-fatal.log'}"
+        ctypes.windll.user32.MessageBoxW(None, msg, "Bloodborne Launcher", 0x10)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

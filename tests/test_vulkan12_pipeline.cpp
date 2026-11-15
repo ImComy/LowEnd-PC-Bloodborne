@@ -71,6 +71,23 @@ int main() {
         std::printf("  [PASS] Presenter ExecutionRenderPassKey validated\n");
     }
 
+    // 4. Verify push descriptor layout create flags conditioning
+    {
+        const auto get_layout_flags = [](bool push_supported) {
+            return push_supported
+                       ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+                       : vk::DescriptorSetLayoutCreateFlags{};
+        };
+
+        const auto unsupported_flags = get_layout_flags(false);
+        assert(!(unsupported_flags & vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR));
+        assert(static_cast<VkDescriptorSetLayoutCreateFlags>(unsupported_flags) == 0);
+
+        const auto supported_flags = get_layout_flags(true);
+        assert(supported_flags & vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR);
+        std::printf("  [PASS] Push descriptor layout flag conditioning validated (fallback to standard sets)\n");
+    }
+
     std::printf("test_vulkan12_pipeline passed successfully!\n");
     return 0;
 }

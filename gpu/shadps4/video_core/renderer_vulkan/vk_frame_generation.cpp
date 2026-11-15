@@ -186,8 +186,12 @@ void FrameGenerator::CreatePipeline() {
         {0, vk::DescriptorType::eSampledImage, 1, vk::ShaderStageFlagBits::eCompute},
         {1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute},
     }};
+    const vk::DescriptorSetLayoutCreateFlags flags =
+        instance.IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     desc_layout = Check(device.createDescriptorSetLayoutUnique({
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = flags,
         .bindingCount = u32(bindings.size()),
         .pBindings = bindings.data(),
     }));
@@ -218,8 +222,12 @@ void FrameGenerator::CreatePipeline() {
         {1, vk::DescriptorType::eSampledImage, 1, vk::ShaderStageFlagBits::eCompute},
         {2, vk::DescriptorType::eSampledImage, 1, vk::ShaderStageFlagBits::eCompute},
     }};
+    const vk::DescriptorSetLayoutCreateFlags ui_flags =
+        instance.IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     ui_desc_layout = Check(device.createDescriptorSetLayoutUnique({
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = ui_flags,
         .bindingCount = u32(ui_bindings.size()),
         .pBindings = ui_bindings.data(),
     }));
@@ -303,7 +311,8 @@ vk::ImageView FrameGenerator::BeginCapture(vk::CommandBuffer cmdbuf, vk::ImageVi
     }};
     const std::array<float, 2> size{float(w), float(h)};
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pipeline_layout, 0, writes);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute, *pipeline_layout, 0,
+                                writes, *desc_layout);
     cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(size),
                          size.data());
     cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
@@ -456,7 +465,8 @@ void FrameGenerator::ComposeUi(vk::CommandBuffer cmdbuf, vk::ImageView color,
     }};
     const std::array<s32, 2> size{s32(width), s32(height)};
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *ui_pipeline);
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *ui_pipeline_layout, 0, writes);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute, *ui_pipeline_layout, 0,
+                                writes, *ui_desc_layout);
     cmdbuf.pushConstants(*ui_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(size),
                          size.data());
     cmdbuf.dispatch((width + 7) / 8, (height + 7) / 8, 1);

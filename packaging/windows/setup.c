@@ -32,6 +32,100 @@ static BOOL run_sync(const wchar_t *cmd, const wchar_t *work_dir) {
     return FALSE;
 }
 
+static BOOL check_py_path(const wchar_t *candidate, wchar_t *out_py) {
+    if (!candidate || !*candidate) return FALSE;
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(candidate, GetFileExInfoStandard, &fad)) return FALSE;
+    if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return FALSE;
+    if (fad.nFileSizeHigh == 0 && fad.nFileSizeLow < 50000) return FALSE;
+    if (wcsstr(candidate, L"\\WindowsApps\\") || wcsstr(candidate, L"\\windowsapps\\")) return FALSE;
+    wcscpy(out_py, candidate);
+    return TRUE;
+}
+
+static BOOL check_registry_python(HKEY root, const wchar_t *subver, wchar_t *out_py) {
+    wchar_t subkey[512];
+    swprintf(subkey, 512, L"Software\\Python\\PythonCore\\%ls\\InstallPath", subver);
+    HKEY hkey;
+    if (RegOpenKeyExW(root, subkey, 0, KEY_READ, &hkey) == ERROR_SUCCESS) {
+        wchar_t install_dir[MAX_PATH];
+        DWORD size = sizeof(install_dir);
+        DWORD type = 0;
+        if (RegQueryValueExW(hkey, NULL, NULL, &type, (LPBYTE)install_dir, &size) == ERROR_SUCCESS) {
+            wchar_t candidate[32768];
+            swprintf(candidate, 32768, L"%ls\\python.exe", install_dir);
+            RegCloseKey(hkey);
+            if (check_py_path(candidate, out_py)) return TRUE;
+        } else {
+            RegCloseKey(hkey);
+        }
+    }
+    return FALSE;
+}
+
+static BOOL check_search_path(wchar_t *out_py) {
+    wchar_t resolved[32768];
+    DWORD len = SearchPathW(NULL, L"python.exe", NULL, 32768, resolved, NULL);
+    if (len > 0 && len < 32768) {
+        if (check_py_path(resolved, out_py)) return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL find_python_cli(const wchar_t *appdata, const wchar_t *dir, wchar_t *out_py) {
+    wchar_t cand[32768];
+    const wchar_t *vers[] = { L"Python314", L"Python313", L"Python312", L"Python311", L"Python310" };
+    const wchar_t *reg_vers[] = { L"3.14", L"3.13", L"3.12", L"3.11", L"3.10" };
+
+    /* 1. Local _internal */
+    swprintf(cand, 32768, L"%ls\\_internal\\python.exe", dir);
+    if (check_py_path(cand, out_py)) return TRUE;
+
+    /* 2. AppData Bloodborne runtime */
+    if (appdata && appdata[0]) {
+        swprintf(cand, 32768, L"%ls\\Bloodborne\\runtime\\python.exe", appdata);
+        if (check_py_path(cand, out_py)) return TRUE;
+
+        /* 3. AppData Programs Python */
+        for (int i = 0; i < 5; i++) {
+            swprintf(cand, 32768, L"%ls\\Programs\\Python\\%ls\\python.exe", appdata, vers[i]);
+            if (check_py_path(cand, out_py)) return TRUE;
+        }
+    }
+
+    /* 4. Program Files */
+    wchar_t pf[32768];
+    if (GetEnvironmentVariableW(L"ProgramFiles", pf, 32768) > 0) {
+        for (int i = 0; i < 5; i++) {
+            swprintf(cand, 32768, L"%ls\\%ls\\python.exe", pf, vers[i]);
+            if (check_py_path(cand, out_py)) return TRUE;
+        }
+    }
+    if (GetEnvironmentVariableW(L"ProgramFiles(x86)", pf, 32768) > 0) {
+        for (int i = 0; i < 5; i++) {
+            swprintf(cand, 32768, L"%ls\\%ls\\python.exe", pf, vers[i]);
+            if (check_py_path(cand, out_py)) return TRUE;
+        }
+    }
+
+    /* 5. C:\Python3* */
+    for (int i = 0; i < 5; i++) {
+        swprintf(cand, 32768, L"C:\\%ls\\python.exe", vers[i]);
+        if (check_py_path(cand, out_py)) return TRUE;
+    }
+
+    /* 6. Registry */
+    for (int i = 0; i < 5; i++) {
+        if (check_registry_python(HKEY_CURRENT_USER, reg_vers[i], out_py)) return TRUE;
+        if (check_registry_python(HKEY_LOCAL_MACHINE, reg_vers[i], out_py)) return TRUE;
+    }
+
+    /* 7. SearchPath */
+    if (check_search_path(out_py)) return TRUE;
+
+    return FALSE;
+}
+
 static BOOL remove_dir_recursive(const wchar_t *path) {
     if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return TRUE;
     wchar_t search_path[32768];
@@ -106,17 +200,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
 
     /* 1. Locate Python */
     wchar_t python_exe[32768] = L"";
-    const wchar_t *py_versions[] = { L"Python313", L"Python314", L"Python312", L"Python311", L"Python310" };
-    for (int i = 0; i < 5; i++) {
-        wchar_t candidate[32768];
-        swprintf(candidate, 32768, L"%ls\\Programs\\Python\\%ls\\python.exe", appdata, py_versions[i]);
-        if (GetFileAttributesW(candidate) != INVALID_FILE_ATTRIBUTES) {
-            wcscpy(python_exe, candidate);
-            break;
-        }
-    }
-    if (!python_exe[0]) {
-        wcscpy(python_exe, L"python.exe");
+    if (!find_python_cli(appdata, port_dir, python_exe)) {
+        MessageBoxW(NULL,
+            L"Could not locate a valid Python 3.10+ installation on your system.\n\n"
+            L"Please download and install Python 3.10 or newer from:\n"
+            L"https://www.python.org/downloads/\n\n"
+            L"Make sure to check 'Add Python to PATH' during installation, then re-run Setup.",
+            L"Bloodborne PC Setup - Python Missing",
+            MB_OK | MB_ICONERROR);
+        return 1;
     }
 
     /* Check PySide6 */
@@ -129,6 +221,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
         wchar_t pip_cmd[32768];
         swprintf(pip_cmd, 32768, L"\"%ls\" -m pip install -q PySide6", python_exe);
         run_sync(pip_cmd, port_dir);
+    }
+
+    /* Check Pillow (PIL) for graphics scaling & fallback launcher */
+    wchar_t check_pil[32768];
+    swprintf(check_pil, 32768, L"\"%ls\" -c \"import PIL\"", python_exe);
+    BOOL has_pil = run_sync(check_pil, port_dir);
+
+    if (!has_pil) {
+        wchar_t pip_pil[32768];
+        swprintf(pip_pil, 32768, L"\"%ls\" -m pip install -q Pillow", python_exe);
+        run_sync(pip_pil, port_dir);
     }
 
     /* 2. Global Binaries setup */

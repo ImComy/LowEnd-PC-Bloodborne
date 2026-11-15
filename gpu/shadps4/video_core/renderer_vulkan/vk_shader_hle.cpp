@@ -59,7 +59,9 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
                            .stageFlags = vk::ShaderStageFlagBits::eCompute};
         }
         p.set_layout = Check(device.createDescriptorSetLayoutUnique({
-            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .flags = instance.IsPushDescriptorSupported()
+                         ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+                         : vk::DescriptorSetLayoutCreateFlags{},
             .bindingCount = static_cast<u32>(bindings.size()),
             .pBindings = bindings.data(),
         }));
@@ -107,7 +109,7 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
         runtime.FlushBarriers();
     }
     const u32 count = static_cast<u32>(copies.size());
-    scheduler.Record([src = src->Handle(), dst = dst->Handle(), table = stream.Handle(), src_min,
+    scheduler.Record([&scheduler, src = src->Handle(), dst = dst->Handle(), table = stream.Handle(), src_min,
                       src_size, dst_min, dst_size, table_offset, table_size,
                       count](vk::CommandBuffer cmdbuf) {
         const std::array<vk::DescriptorBufferInfo, 3> infos{{
@@ -123,7 +125,8 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
                          .pBufferInfo = &infos[i]};
         }
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *pipe.pipeline);
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pipe.layout, 0, writes);
+        scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute, *pipe.layout, 0,
+                                    writes, *pipe.set_layout);
         cmdbuf.pushConstants(*pipe.layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(count),
                              &count);
         cmdbuf.dispatch(count, 1, 1);

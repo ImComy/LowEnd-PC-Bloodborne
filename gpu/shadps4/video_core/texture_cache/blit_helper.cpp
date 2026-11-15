@@ -116,8 +116,9 @@ void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, u32 num_sample
         .descriptorType = vk::DescriptorType::eSampledImage,
         .pImageInfo = &image_info,
     };
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *single_texture_pl_layout, 0U,
-                                texture_write);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eGraphics,
+                                *single_texture_pl_layout, 0U, texture_write,
+                                *single_texture_descriptor_set_layout);
 
     const MsPipelineKey key{num_samples, dst_pixel_format, false};
     auto it = std::ranges::find(color_to_ms_depth_pl, key, &MsPipeline::first);
@@ -226,8 +227,9 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
         .descriptorType = vk::DescriptorType::eSampledImage,
         .pImageInfo = &image_info,
     };
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *single_texture_pl_layout, 0U,
-                                texture_write);
+    scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eGraphics,
+                                *single_texture_pl_layout, 0U, texture_write,
+                                *single_texture_descriptor_set_layout);
 
     const MsPipelineKey key{num_samples, pixel_format, src_msaa};
     auto it = std::ranges::find(ms_image_copy_pl, key, &MsPipeline::first);
@@ -283,7 +285,9 @@ void BlitHelper::CreatePipelineLayouts() {
         .stageFlags = vk::ShaderStageFlagBits::eFragment,
     };
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci = {
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = instance.IsPushDescriptorSupported()
+                     ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+                     : vk::DescriptorSetLayoutCreateFlags{},
         .bindingCount = 1U,
         .pBindings = &texture_binding,
     };

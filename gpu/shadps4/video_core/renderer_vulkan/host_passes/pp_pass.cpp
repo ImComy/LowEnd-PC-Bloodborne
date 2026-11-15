@@ -7,16 +7,21 @@
 #include "core/emulator_settings.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
 #include "video_core/host_shaders/post_process_frag.h"
+#include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 #include <boost/container/static_vector.hpp>
 
 namespace Vulkan::HostPasses {
 
-void PostProcessingPass::Create(vk::Device device, const vk::Format surface_format,
-                                bool dynamic_rendering) {
+void PostProcessingPass::Create(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
+                                const vk::Format surface_format, bool dynamic_rendering) {
+    this->instance = &instance_;
+    this->scheduler = &scheduler_;
+    const auto device = instance_.GetDevice();
     this->device_handle = device;
     this->dynamic_rendering = dynamic_rendering;
 
@@ -57,8 +62,12 @@ void PostProcessingPass::Create(vk::Device device, const vk::Format surface_form
         },
     };
 
+    const vk::DescriptorSetLayoutCreateFlags flags =
+        instance->IsPushDescriptorSupported()
+            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+            : vk::DescriptorSetLayoutCreateFlags{};
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci{
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = flags,
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),
     };
@@ -284,7 +293,8 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
                              },
                          });
 
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0, set_writes);
+    scheduler->PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
+                                 set_writes, *desc_set_layout);
     cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(Settings),
                          &settings);
 

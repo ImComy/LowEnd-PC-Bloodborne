@@ -68,7 +68,9 @@ IndirectGuard::IndirectGuard(const Instance& instance_, Scheduler& scheduler_)
                        .stageFlags = vk::ShaderStageFlagBits::eCompute};
     }
     set_layout = Check(device.createDescriptorSetLayoutUnique({
-        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .flags = instance.IsPushDescriptorSupported()
+                     ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+                     : vk::DescriptorSetLayoutCreateFlags{},
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),
     }));
@@ -127,7 +129,8 @@ std::pair<vk::Buffer, u64> IndirectGuard::CheckArgs(const VideoCore::Buffer& arg
                          .pBufferInfo = &infos[i]};
         }
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pipeline_layout, 0, writes);
+        scheduler.PushDescriptorSet(cmdbuf, vk::PipelineBindPoint::eCompute, *pipeline_layout, 0,
+                                    writes, *set_layout);
         cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
                              &push);
         cmdbuf.dispatch(1, 1, 1);

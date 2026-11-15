@@ -39,12 +39,25 @@ Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
+    if (!instance.IsPushDescriptorSupported()) {
+        static constexpr std::array FallbackHeapSizes = {
+            vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 256},
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 512},
+            vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 1024},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 512},
+            vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 512},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 1024},
+        };
+        fallback_desc_heap =
+            std::make_unique<DescriptorHeap>(instance, &work_semaphore, FallbackHeapSizes, 512);
+    }
     AllocateWorkerCommandBuffers();
     priority_pending_ops_thread =
         std::jthread(std::bind_front(&Scheduler::PriorityPendingOpsThread, this));
 }
 
 Scheduler::~Scheduler() {
+    fallback_desc_heap.reset();
     if (recorder_thread.joinable()) {
         SyncRecording();
         recorder_thread.request_stop();
@@ -577,6 +590,39 @@ void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
 
         op.callback();
     }
+}
+
+void Scheduler::PushDescriptorSet(vk::CommandBuffer cmdbuf, vk::PipelineBindPoint bind_point,
+                                  vk::PipelineLayout layout, u32 set_index,
+                                  std::span<const vk::WriteDescriptorSet> writes,
+                                  vk::DescriptorSetLayout set_layout) {
+    if (instance.IsPushDescriptorSupported()) {
+        cmdbuf.pushDescriptorSetKHR(bind_point, layout, set_index, writes);
+        return;
+    }
+    ASSERT_MSG(set_layout, "PushDescriptorSet fallback requires a valid set_layout");
+    if (!fallback_desc_heap) {
+        static constexpr std::array FallbackHeapSizes = {
+            vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 256},
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 512},
+            vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 1024},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 512},
+            vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 512},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 1024},
+        };
+        fallback_desc_heap =
+            std::make_unique<DescriptorHeap>(instance, &work_semaphore, FallbackHeapSizes, 512);
+    }
+    const auto desc_set = fallback_desc_heap->Commit(set_layout);
+    boost::container::static_vector<vk::WriteDescriptorSet, 16> patched_writes;
+    patched_writes.reserve(writes.size());
+    for (const auto& w : writes) {
+        auto copy = w;
+        copy.dstSet = desc_set;
+        patched_writes.push_back(copy);
+    }
+    instance.GetDevice().updateDescriptorSets(patched_writes, {});
+    cmdbuf.bindDescriptorSets(bind_point, layout, set_index, desc_set, {});
 }
 
 void DynamicState::Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf) {
