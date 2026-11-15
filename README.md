@@ -2,6 +2,12 @@
 
 Run your own decrypted copy of Bloodborne (CUSA03173, version 1.09) natively on Windows 10 or 11 — **now running on Vulkan 1.2+ GPUs without requiring Vulkan 1.3!**
 
+<div align="center">
+
+[![Download ZIP](https://img.shields.io/badge/Download_ZIP-Ready_to_Play_(Direct_Download)-2ea44f?style=for-the-badge&logo=github&logoColor=white)](https://github.com/ImComy/LowEnd-PC-Bloodborne/archive/refs/heads/windows.zip)
+
+</div>
+
 The game's code runs directly on your CPU and its graphics are translated to Vulkan. This project is a fork of [Jgamrot's fork](https://github.com/Jgamrot/bloodborne_pc), which is based on [Supermedo's Windows port](https://github.com/Supermedo/bloodborne_pc) by Mohammed Albarghouthi, building upon [deadinside28's bbport](https://github.com/deadinside28/bloodborne_pc) and the [shadPS4](https://github.com/shadps4-emu/shadPS4) renderer.
 
 > [!IMPORTANT]
@@ -23,19 +29,29 @@ STOP: GPU library assertion failed (see GPU log above)
 Upstream ports were coded strictly against **Vulkan 1.3**, relying heavily on modern features like `VK_KHR_dynamic_rendering` (`vkCmdBeginRendering`) and locking out millions of capable older GPUs (such as Kepler / Maxwell / older Quadro & Radeon series).
 
 **This fork eliminates the Vulkan 1.3 barrier:**
-* **Vulkan 1.2.175+ Compatibility Layer**: Emulates dynamic rendering through a high-performance `VkRenderPass` & `VkFramebuffer` virtualization layer, custom shader compilation profiles, and legacy Vulkan driver guards.
-* **Tested on NVIDIA Quadro K4200 (Kepler 4 GB, Driver 475.14)**: Plays smoothly at 40–60 FPS on balanced 720p/900p settings.
-* **Low-End VRAM Anti-Thrashing (Working Set Protection)**: Completely prevents the 30+ texture evictions/sec stutter on 4 GB VRAM cards when turning the camera, without degrading texture resolution.
+* **Vulkan 1.2+ Universal Compatibility Layer**: Emulates dynamic rendering through a high-performance `VkRenderPass` & `VkFramebuffer` virtualization layer, custom SPIR-V 1.5 shader compilation profiles, and legacy Vulkan driver guards.
+* **Universal Push Descriptor Fallback**: Automatically emulates push descriptors for GPUs lacking `VK_KHR_push_descriptor` (such as AMD GCN 1.0 / FirePro M6100 / Radeon HD 7000/8000 / R9 270/280) through thread-safe descriptor set binding and updates.
+* **Tested on Legacy Hardware**: Verified on NVIDIA Quadro K4200 (Kepler 4 GB, Driver 475.14) and AMD FirePro M6100 (GCN 1.0 2 GB, Driver 2.0.179 / Adrenalin 21.5).
+* **Low-End VRAM Anti-Thrashing (Working Set Protection)**: Completely prevents the 30+ texture evictions/sec stutter on 2 GB / 4 GB VRAM cards when turning the camera, without degrading texture resolution.
 * **Clustered Light Grid Resolution Matching**: Dynamically scales the 3D lighting grid compute passes to the active render resolution, saving 10%–18% GPU time in Yharnam with zero visual degradation.
-* **Zero Bloat & Simple 1-Click Launch**: Includes clean Windows executables (`Bloodborne.exe`, `Play Bloodborne.exe`, `Setup Bloodborne.exe`) that work out of the box without requiring manual command lines or multi-gigabyte build downloads.
+* **Zero Bloat & Simple 1-Click Launch**: Includes clean Windows native executables (`Bloodborne.exe`, `Bloodborne Launcher.exe`, `Play Bloodborne.exe`, `Setup Bloodborne.exe`) with hardened Python detection (bypassing dummy WindowsApps stubs) and zero silent exits.
 
 ---
 
-## Download & Installation
+## 📥 Download & Installation
 
-1. Clone the repository or download the Code as a Zip file
-2. Extract the archive into a permanent folder (e.g. `C:\Games\Bloodborne\BloodBorne-Port`). **Do not run the game directly from inside the zip file.**
+### Option 1: Direct ZIP Download (Recommended)
+1. **[👉 Click here to Download LowEnd-PC-Bloodborne (.zip) 👈](https://github.com/ImComy/LowEnd-PC-Bloodborne/archive/refs/heads/windows.zip)**
+   *(Or click the green **<> Code** button at the top of the GitHub page and select **Download ZIP**)*.
+2. Extract the downloaded ZIP archive into a permanent folder (e.g. `C:\Games\Bloodborne\BloodBorne-Port`).
+   > [!WARNING]
+   > **Do not run the game from inside the zip file!** Always right-click the zip, choose **Extract All...**, and run the game from the extracted folder.
 3. Make sure you have your decrypted game dump of **Bloodborne (CUSA03173) updated to version 1.09**.
+
+### Option 2: Clone via Git
+```bash
+git clone -b windows https://github.com/ImComy/LowEnd-PC-Bloodborne.git
+```
 
 ```text
 C:\Games\Bloodborne\
@@ -118,7 +134,7 @@ python run.py
 * **Black screen or shader compilation delay**:
   * The first launch compiles game shaders (*Preparing shaders* in window title). Later boots are instant.
 * **Report an issue / feedback**:
-  * This project is actively developed. If you test on low-end hardware, open an issue on the [GitHub Repository](https://github.com/ImComy/BloodBorne-Port/issues) and include:
+  * This project is actively developed. If you test on low-end hardware, open an issue on the [GitHub Repository](https://github.com/ImComy/LowEnd-PC-Bloodborne/issues) and include:
     1. Your GPU model and driver version.
     2. Your CPU and RAM.
     3. What happened and the contents of `user\last_run.log`.
